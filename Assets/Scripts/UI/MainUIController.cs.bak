@@ -1,0 +1,1649 @@
+﻿using System;
+using UnityEngine;
+using UnityEngine.UI;
+using SatelliteEdgeComputing.Network;
+using System.Collections;
+
+namespace SatelliteEdgeComputing.UI
+{
+    /// <summary>
+    /// 涓籙I鎺у埗鍣?
+    /// </summary>
+    public class MainUIController : MonoBehaviour
+    {
+       
+        [Header("UI闈㈡澘")]
+        [SerializeField] private GameObject controlPanel;
+        [SerializeField] private GameObject statisticsPanel;
+        [SerializeField] private GameObject taskPanel;
+        [SerializeField] private GameObject infoPanel;
+        [SerializeField] private GameObject connectionPanel;
+
+        [Header("UI鍏冪礌")]
+        [SerializeField] private Text statusText;
+        [SerializeField] private Text timeText;
+        [SerializeField] private Text fpsText;
+        [SerializeField] private Button startButton;
+        [SerializeField] private Button pauseButton;
+        [SerializeField] private Button resetButton;
+        [SerializeField] private Dropdown algorithmDropdown;
+        [SerializeField] private Slider timeScaleSlider;
+        [SerializeField] private Text timeScaleValueText;
+        [SerializeField] private Toggle showOrbitsToggle;
+        [SerializeField] private Toggle showLinksToggle;
+        [SerializeField] private Toggle showLabelsToggle;
+        [SerializeField] private Text connectionStatusText;
+        [SerializeField] private Button reconnectButton;
+        [SerializeField] private Button initializeDemoButton;
+        [SerializeField] private Button clearTasksButton;
+
+        [Header("缁熻淇℃伅")]
+        [SerializeField] private Text satellitesCountText;
+        [SerializeField] private Text tasksCountText;
+        [SerializeField] private Text processedTasksText;
+        [SerializeField] private Text successRateText;
+        [SerializeField] private Text avgProcessingTimeText;
+        [SerializeField] private Text activeLinksText;
+        [SerializeField] private Text avgLoadText;
+
+        [Header("浠诲姟鍒楄〃")]
+        [SerializeField] private Transform taskListContent;
+        [SerializeField] private GameObject taskItemPrefab;
+        [SerializeField] private ScrollRect taskScrollRect;
+
+        [Header("淇℃伅闈㈡澘")]
+        [SerializeField] private Text selectedObjectText;
+        [SerializeField] private Text objectDetailsText;
+        [SerializeField] private Button closeInfoButton;
+
+        [Header("璁剧疆")]
+        [SerializeField] private float uiUpdateInterval = 0.5f; // UI鏇存柊闂撮殧锛堢锛?
+        [SerializeField] private bool autoCreateUI = true; // 鏄惁鑷姩鍒涘缓UI锛坒alse鍒欎娇鐢↖nspector璧嬪€肩殑UI锛?
+
+        // 寮曠敤
+        private Core.SimulationManager simulationManager;
+        private Visualization.CameraController cameraController;
+        private Visualization.SatelliteVisualizer satelliteVisualizer;
+        private Visualization.GroundStationVisualizer groundStationVisualizer;
+        private Visualization.LinkVisualizer linkVisualizer;
+
+        private float lastUIUpdateTime = 0f;
+        private int frameCount = 0;
+        private float fpsUpdateTime = 0f;
+        private float currentFPS = 60f;
+        private bool isInitialized = false;  // 闃叉閲嶅鍒濆鍖?
+
+        #region 鍒濆鍖?
+        /// <summary>
+        /// 鍒濆鍖朥I
+        /// </summary>
+        public void Initialize(
+            Core.SimulationManager simManager,
+            Visualization.CameraController camController,
+            Visualization.SatelliteVisualizer satVisualizer,
+            Visualization.GroundStationVisualizer gsVisualizer,
+            Visualization.LinkVisualizer lnkVisualizer)
+        {
+            Debug.Log($"[MainUIController] Initialize called. isInitialized={isInitialized}, autoCreateUI={autoCreateUI}");
+
+            // 鎬绘槸鏇存柊鍙鍖栧櫒寮曠敤锛堝鏋滄彁渚涗簡鏈夋晥寮曠敤锛?
+            bool wasSimManagerNull = (simulationManager == null);
+            if (satVisualizer != null) satelliteVisualizer = satVisualizer;
+            if (gsVisualizer != null) groundStationVisualizer = gsVisualizer;
+            if (lnkVisualizer != null) linkVisualizer = lnkVisualizer;
+            if (simManager != null) simulationManager = simManager;
+            if (camController != null) cameraController = camController;
+
+            // 濡傛灉 simulationManager 浠?null 鍙樹负鏈夋晥锛岄渶瑕佽闃呬簨浠?
+            if (wasSimManagerNull && simulationManager != null)
+            {
+                Debug.Log("[MainUIController] 璁㈤槄 SimulationManager 浜嬩欢");
+                SubscribeToSimulationEvents();
+            }
+
+            if (isInitialized)
+            {
+                Debug.Log("[MainUIController] Initialize: 宸插垵濮嬪寲锛屾洿鏂板紩鐢ㄥ悗杩斿洖");
+                return;  // 闃叉閲嶅鍒濆鍖朥I鍜屼簨浠?
+            }
+
+            // 棣栨鍒濆鍖栨椂淇濆瓨寮曠敤
+            // 娉細涓婇潰鐨勫紩鐢ㄥ凡缁忚缃?
+
+            Debug.Log($"[MainUIController] Initialize: taskPanel={taskPanel}, taskListContent={taskListContent}");
+
+            // 纭繚 UI 鍏冪礌宸插垱寤猴紙鍙兘鍦?Start() 涔嬪墠琚皟鐢級
+            if (autoCreateUI)
+            {
+                Debug.Log("[MainUIController] Initialize: 璋冪敤 FindOrCreateUIElements");
+                FindOrCreateUIElements();
+            }
+            else
+            {
+                Debug.LogWarning("[MainUIController] Initialize: autoCreateUI=false锛岃烦杩嘦I鍒涘缓");
+            }
+
+            SetupEventListeners();
+            UpdateUIElements();
+
+            // 鍒濆鍖栫畻娉曚笅鎷夋
+            if (algorithmDropdown != null)
+            {
+                algorithmDropdown.ClearOptions();
+                algorithmDropdown.AddOptions(new System.Collections.Generic.List<string>
+                {
+                    "FCFS (鍏堟潵鍏堟湇鍔?",
+                    "SJF (鏈€鐭綔涓氫紭鍏?",
+                    "EDD (鏈€鏃╂埅姝㈡椂闂翠紭鍏?",
+                    "Max-Visibility (鏈€澶у彲瑙佹€?"
+                });
+                algorithmDropdown.value = 0;
+            }
+
+            // 鍒濆鍖栨椂闂存粦鍧?
+            if (timeScaleSlider != null)
+            {
+                timeScaleSlider.minValue = 1f;
+                timeScaleSlider.maxValue = 3600f;
+                timeScaleSlider.value = simulationManager != null ? simulationManager.SpeedFactor : 60f;
+            }
+
+            isInitialized = true;
+            Debug.Log("涓籙I鎺у埗鍣ㄥ垵濮嬪寲瀹屾垚");
+        }
+
+        /// <summary>
+        /// 璁剧疆浜嬩欢鐩戝惉鍣?
+        /// </summary>
+        private void SetupEventListeners()
+        {
+            if (startButton != null)
+                startButton.onClick.AddListener(OnStartButtonClick);
+
+            if (pauseButton != null)
+                pauseButton.onClick.AddListener(OnPauseButtonClick);
+
+            if (resetButton != null)
+                resetButton.onClick.AddListener(OnResetButtonClick);
+
+            if (algorithmDropdown != null)
+                algorithmDropdown.onValueChanged.AddListener(OnAlgorithmChanged);
+
+            if (timeScaleSlider != null)
+                timeScaleSlider.onValueChanged.AddListener(OnTimeScaleChanged);
+
+            if (timeScaleValueText != null)
+                timeScaleValueText.text = $"x{(simulationManager != null ? simulationManager.SpeedFactor : 60f):F1}";
+
+            if (showOrbitsToggle != null)
+                showOrbitsToggle.onValueChanged.AddListener(OnShowOrbitsChanged);
+
+            if (showLinksToggle != null)
+                showLinksToggle.onValueChanged.AddListener(OnShowLinksChanged);
+
+            if (showLabelsToggle != null)
+                showLabelsToggle.onValueChanged.AddListener(OnShowLabelsChanged);
+
+            if (reconnectButton != null)
+                reconnectButton.onClick.AddListener(OnReconnectButtonClick);
+
+            if (initializeDemoButton != null)
+                initializeDemoButton.onClick.AddListener(OnInitializeDemoButtonClick);
+
+            if (clearTasksButton != null)
+                clearTasksButton.onClick.AddListener(OnClearTasksButtonClick);
+
+            if (closeInfoButton != null)
+                closeInfoButton.onClick.AddListener(OnCloseInfoButtonClick);
+
+            // 鐩戝惉浠跨湡浜嬩欢
+            SubscribeToSimulationEvents();
+
+            Network.ApiClient.Instance.OnConnectionStatusChanged += UpdateConnectionStatus;
+            Network.ApiClient.Instance.OnError += OnApiError;
+
+            // 鍚姩鍗忕▼绛夊緟鏁版嵁鍔犺浇瀹屾垚
+            StartCoroutine(WaitForDataAndRefresh());
+        }
+
+        /// <summary>
+        /// 璁㈤槄浠跨湡绠＄悊鍣ㄤ簨浠?
+        /// </summary>
+        private void SubscribeToSimulationEvents()
+        {
+            if (simulationManager != null)
+            {
+                simulationManager.OnSimulationStarted += OnSimulationStarted;
+                simulationManager.OnSimulationPaused += OnSimulationPaused;
+                simulationManager.OnSimulationReset += OnSimulationReset;
+                simulationManager.OnDataUpdated += OnDataUpdated;
+                simulationManager.OnAlgorithmChanged += OnAlgorithmChangedEvent;
+                simulationManager.OnSimulationInitialized += OnSimulationInitialized;
+                Debug.Log("[MainUIController] 宸茶闃匰imulationManager浜嬩欢");
+            }
+        }
+
+        
+        
+        /// <summary>
+        /// 绛夊緟鏁版嵁鍔犺浇瀹屾垚鍚庡埛鏂癠I
+        /// </summary>
+        private IEnumerator WaitForDataAndRefresh()
+        {
+            // 绛夊緟鍒濆鍖栧畬鎴?
+            int maxWaitFrames = 300; // 鏈€澶氱瓑寰?绉掞紙60fps * 5锛?
+            int waitFrames = 0;
+
+            while (!simulationManager.IsInitialized && waitFrames < maxWaitFrames)
+            {
+                yield return null;
+                waitFrames++;
+            }
+
+            Debug.Log($"[MainUIController] 鍒濆鍖栫瓑寰呭畬鎴?IsInitialized={simulationManager.IsInitialized}, 绛夊緟甯ф暟={waitFrames}");
+
+            // 绛夊緟鏇撮暱鏃堕棿纭繚鏁版嵁瀹屽叏鍔犺浇鍒癠I绾跨▼
+            yield return new WaitForSeconds(0.2f);
+
+            // 澶氭灏濊瘯鏇存柊浠诲姟鍒楄〃
+            int retryCount = 0;
+            int maxRetries = 5;
+            while (retryCount < maxRetries)
+            {
+                if (simulationManager.Tasks.Count > 0)
+                {
+                    Debug.Log($"[MainUIController] 鏁版嵁宸插姞杞斤紝鏇存柊浠诲姟鍒楄〃锛屼换鍔℃暟: {simulationManager.Tasks.Count}");
+                    // 閲嶇疆鏇存柊棰戠巼闄愬埗锛屽己鍒舵洿鏂?
+                    lastUIUpdateTime = 0f;
+                    UpdateTaskList();
+                    break;
+                }
+                else
+                {
+                    Debug.LogWarning($"[MainUIController] 绗?{retryCount + 1} 娆℃鏌ワ細娌℃湁浠诲姟鏁版嵁锛岀瓑寰呴噸璇?..");
+                    yield return new WaitForSeconds(0.5f);
+                    retryCount++;
+                }
+            }
+
+            UpdateUIElements();
+        }
+
+        /// <summary>
+        /// 鏇存柊UI鍏冪礌
+        /// </summary>
+        private void UpdateUIElements()
+        {
+            // 鏇存柊鐘舵€?
+            if (statusText != null)
+            {
+                string status = simulationManager.IsRunning ? "杩愯涓? : "宸叉殏鍋?;
+                statusText.text = $"鐘舵€? {status}";
+            }
+
+            // 鏇存柊鏃堕棿
+            if (timeText != null)
+            {
+                float time = simulationManager.SimulationTime;
+                timeText.text = $"浠跨湡鏃堕棿: {FormatTime(time)}";
+            }
+
+            // 鏇存柊鎸夐挳鐘舵€?
+            if (startButton != null)
+                startButton.interactable = !simulationManager.IsRunning;
+
+            if (pauseButton != null)
+                pauseButton.interactable = simulationManager.IsRunning;
+
+            // 鏇存柊杩炴帴鐘舵€?
+            UpdateConnectionStatus();
+
+            // 鏇存柊缁熻淇℃伅
+            UpdateStatistics();
+        }
+
+        /// <summary>
+        /// 鏇存柊缁熻淇℃伅
+        /// </summary>
+        private void UpdateStatistics()
+        {
+            if (simulationManager == null) return;
+
+            if (satellitesCountText != null)
+                satellitesCountText.text = $"鍗槦鏁伴噺: {simulationManager.Satellites.Count}";
+
+            if (tasksCountText != null)
+                tasksCountText.text = $"浠诲姟鏁伴噺: {simulationManager.Tasks.Count}";
+
+            if (processedTasksText != null)
+                processedTasksText.text = $"宸插鐞? {simulationManager.TotalTasksProcessed}";
+
+            if (successRateText != null)
+                successRateText.text = $"鎴愬姛鐜? {simulationManager.SuccessRate:P1}";
+
+            if (avgProcessingTimeText != null)
+                avgProcessingTimeText.text = $"骞冲潎澶勭悊鏃堕棿: {simulationManager.AverageProcessingTime:F1}s";
+
+            // 璁＄畻骞冲潎璐熻浇
+            if (avgLoadText != null && simulationManager.Satellites.Count > 0)
+            {
+                float totalLoad = 0f;
+                foreach (var satellite in simulationManager.Satellites)
+                {
+                    totalLoad += satellite.LoadRate;
+                }
+                float avgLoad = totalLoad / simulationManager.Satellites.Count;
+                avgLoadText.text = $"骞冲潎璐熻浇: {avgLoad:P1}";
+            }
+
+            // 璁＄畻娲昏穬閾捐矾锛堢畝鍖栵級
+            if (activeLinksText != null)
+            {
+                // 杩欓噷鍙互娣诲姞瀹為檯鐨勯摼璺粺璁?
+                activeLinksText.text = "娲昏穬閾捐矾: 璁＄畻涓?..";
+            }
+        }
+
+        /// <summary>
+        /// 纭繚浠诲姟鍒楄〃瀹瑰櫒瀛樺湪
+        /// </summary>
+        private void EnsureTaskListContent()
+        {
+            if (taskListContent != null) return;
+
+            Debug.Log("[MainUIController] EnsureTaskListContent: 寮€濮嬪垱寤轰换鍔″垪琛ㄥ鍣?);
+
+            // 濡傛灉 taskPanel 涓?null锛屽皾璇曟煡鎵炬垨鍒涘缓
+            if (taskPanel == null)
+            {
+                // 灏濊瘯鍦ㄥ満鏅腑鏌ユ壘宸叉湁鐨?TaskPanel
+                var existingPanel = GameObject.Find("TaskPanel");
+                if (existingPanel != null)
+                {
+                    taskPanel = existingPanel;
+                    Debug.Log($"[MainUIController] 鎵惧埌宸插瓨鍦ㄧ殑 TaskPanel: {taskPanel.name}");
+                }
+                else
+                {
+                    // 鍒涘缓 Canvas锛堝鏋滀笉瀛樺湪锛?
+                    Canvas canvas = FindObjectOfType<Canvas>();
+                    if (canvas == null)
+                    {
+                        GameObject canvasGO = new GameObject("MainCanvas");
+                        canvas = canvasGO.AddComponent<Canvas>();
+                        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                        canvasGO.AddComponent<CanvasScaler>();
+                        canvasGO.AddComponent<GraphicRaycaster>();
+                        Debug.Log($"[MainUIController] 鍒涘缓浜嗘柊鐨?Canvas: {canvasGO.name}");
+                    }
+
+                    // 鍒涘缓 TaskPanel
+                    taskPanel = CreatePanel(canvas.transform, "TaskPanel", new Vector2(400, -165), new Vector2(200, 300));
+                    Debug.Log($"[MainUIController] 鍒涘缓浜嗘柊鐨?TaskPanel: {(taskPanel != null ? taskPanel.name : "null")}");
+                }
+            }
+
+            // 鍐嶆妫€鏌?taskPanel 鏄惁鏈夋晥
+            if (taskPanel == null)
+            {
+                Debug.LogError("[MainUIController] EnsureTaskListContent: taskPanel 鍒涘缓澶辫触锛?);
+                return;
+            }
+
+            // 鍦?taskPanel 涓嬪垱寤?TaskListContent
+            GameObject contentGO = new GameObject("TaskListContent");
+            contentGO.transform.SetParent(taskPanel.transform, false);
+
+            RectTransform contentRect = contentGO.AddComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0, 0);
+            contentRect.anchorMax = new Vector2(1, 1);
+            contentRect.pivot = new Vector2(0.5f, 1);
+            contentRect.anchoredPosition = new Vector2(0, -25);
+            contentRect.sizeDelta = new Vector2(0, -100);
+
+            // 娣诲姞涓€涓崐閫忔槑鑳屾櫙浠ヤ究璋冭瘯
+            Image bgImage = contentGO.AddComponent<Image>();
+            bgImage.color = new Color(0.2f, 0.3f, 0.2f, 0.5f);
+
+            taskListContent = contentGO.transform;
+            Debug.Log($"[MainUIController] EnsureTaskListContent 瀹屾垚: taskListContent={taskListContent}");
+        }
+
+        /// <summary>
+        /// 鏇存柊浠诲姟鍒楄〃
+        /// </summary>
+        private void UpdateTaskList()
+        {
+            // 纭繚 taskListContent 瀛樺湪
+            EnsureTaskListContent();
+
+            if (taskListContent == null)
+            {
+                Debug.LogWarning($"[MainUIController] UpdateTaskList: 鏃犳硶鍒涘缓 taskListContent");
+                return;
+            }
+
+            if (taskItemPrefab == null)
+            {
+                // 鍔ㄦ€佸垱寤?taskItemPrefab
+                taskItemPrefab = CreateDefaultTaskItemPrefab();
+                Debug.Log($"[MainUIController] 鍔ㄦ€佸垱寤轰簡 taskItemPrefab: {taskItemPrefab}");
+            }
+
+            // 娓呴櫎鐜版湁浠诲姟椤?
+            foreach (Transform child in taskListContent)
+            {
+                Destroy(child.gameObject);
+            }
+
+            // 妫€鏌ヤ换鍔℃暟閲?
+            int taskCount = simulationManager.Tasks.Count;
+            Debug.Log($"[MainUIController] UpdateTaskList: 鍏辨湁 {taskCount} 涓换鍔￠渶瑕佹樉绀?);
+
+            // 濡傛灉娌℃湁浠诲姟锛屾樉绀烘彁绀?
+            if (taskCount == 0)
+            {
+                GameObject emptyItem = new GameObject("EmptyTask");
+                emptyItem.transform.SetParent(taskListContent, false);
+
+                RectTransform rect = emptyItem.AddComponent<RectTransform>();
+                rect.anchorMin = new Vector2(0.5f, 0.5f);
+                rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0.5f, 0.5f);
+                rect.anchoredPosition = Vector2.zero;
+                rect.sizeDelta = new Vector2(180, 30);
+
+                Text text = emptyItem.AddComponent<Text>();
+                text.text = "No Tasks!";
+                text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                text.fontSize = 14;
+                text.color = Color.gray;
+                text.alignment = TextAnchor.MiddleCenter;
+                return;
+            }
+
+            // 娣诲姞鏂颁换鍔￠」锛屽瀭鐩存帓鍒?
+            int maxTasks = 20; // 闄愬埗鏄剧ず鏁伴噺
+            int count = 0;
+            float itemHeight = 65f; // 姣忎釜浠诲姟椤圭殑楂樺害
+            float startY = -5f; // 浠庨《閮ㄥ紑濮嬶紝鐣欎竴鐐归棿璺?
+
+            foreach (var task in simulationManager.Tasks)
+            {
+                if (count >= maxTasks) break;
+
+                GameObject taskItem = Instantiate(taskItemPrefab, taskListContent);
+                taskItem.SetActive(true); // 纭繚鍚敤
+                taskItem.name = $"TaskItem_{task.id}"; // 璁剧疆鏈夋剰涔夌殑鍚嶇О
+
+                // 璁剧疆浠诲姟椤逛綅缃?
+                RectTransform itemRect = taskItem.GetComponent<RectTransform>();
+                if (itemRect != null)
+                {
+                    Debug.Log("Update task褰撲腑......");
+                    itemRect.anchorMin = new Vector2(0, 1);
+                    itemRect.anchorMax = new Vector2(1, 1);
+                    itemRect.pivot = new Vector2(0.5f, 1);
+                    itemRect.anchoredPosition = new Vector2(0, startY - count * itemHeight);
+                    itemRect.sizeDelta = new Vector2(-10, itemHeight - 5);
+                }
+
+                TaskItemUI taskUI = taskItem.GetComponent<TaskItemUI>();
+                if (taskUI != null)
+                {
+                    taskUI.Initialize(task);
+                }
+
+                count++;
+            }
+
+            Debug.Log($"[MainUIController] UpdateTaskList: 宸插垱寤?{count} 涓换鍔￠」UI");
+        }
+
+        /// <summary>
+        /// 鏍煎紡鍖栨椂闂存樉绀?
+        /// </summary>
+        private string FormatTime(float seconds)
+        {
+            int hours = (int)(seconds / 3600);
+            int minutes = (int)((seconds % 3600) / 60);
+            int secs = (int)(seconds % 60);
+
+            if (hours > 0)
+                return $"{hours:D2}:{minutes:D2}:{secs:D2}";
+            else
+                return $"{minutes:D2}:{secs:D2}";
+        }
+
+        #region 浜嬩欢澶勭悊
+        private void OnStartButtonClick()
+        {
+            simulationManager.StartSimulation();
+        }
+
+        private void OnPauseButtonClick()
+        {
+            simulationManager.PauseSimulation();
+        }
+
+        private void OnResetButtonClick()
+        {
+            simulationManager.ResetSimulation();
+        }
+
+        private void OnAlgorithmChanged(int index)
+        {
+            string[] algorithms = { "fcfs", "sjf", "edd", "max_visibility" };
+            if (index >= 0 && index < algorithms.Length)
+            {
+                simulationManager.SetAlgorithm(algorithms[index]);
+            }
+        }
+
+        private void OnTimeScaleChanged(float value)
+        {
+            simulationManager.SetSpeedFactor(value);
+            if (timeScaleValueText != null)
+            {
+                timeScaleValueText.text = $"x{value:F1}";
+            }
+        }
+
+        private void OnShowOrbitsChanged(bool show)
+        {
+            if (satelliteVisualizer != null)
+            {
+                satelliteVisualizer.SetOrbitsVisible(show);
+            }
+        }
+
+        private void OnShowLinksChanged(bool show)
+        {
+            if (linkVisualizer != null)
+            {
+                linkVisualizer.SetLinksVisible(show);
+            }
+        }
+
+        private void OnShowLabelsChanged(bool show)
+        {
+            if (satelliteVisualizer != null)
+            {
+                satelliteVisualizer.SetLabelsVisible(show);
+            }
+            if (groundStationVisualizer != null)
+            {
+                groundStationVisualizer.SetLabelsVisible(show);
+            }
+        }
+
+        private void OnReconnectButtonClick()
+        {
+            if (connectionStatusText != null)
+            {
+                connectionStatusText.text = "API: 閲嶆柊杩炴帴涓?..";
+                connectionStatusText.color = Color.yellow;
+            }
+
+            StartCoroutine(Network.ApiClient.Instance.TestConnection((connected) =>
+            {
+                if (simulationManager != null)
+                {
+                    simulationManager.SetBackendEnabled(connected);
+                    if (connected && simulationManager.IsInitialized)
+                    {
+                        simulationManager.ResetSimulation();
+                    }
+                }
+
+                UpdateConnectionStatus();
+            }));
+        }
+
+        private void OnInitializeDemoButtonClick()
+        {
+            if (simulationManager == null) return;
+
+            // 璋冪敤API鍒濆鍖栨紨绀烘暟鎹?
+            StartCoroutine(Network.ApiClient.Instance.InitializeDemo(
+                (success) => {
+                    if (success)
+                    {
+                        Debug.Log("婕旂ず鏁版嵁鍒濆鍖栨垚鍔?);
+                        // 鍒锋柊浠诲姟鍒楄〃
+                        StartCoroutine(RefreshTasks());
+                        // 鏇存柊UI
+                        UpdateUIElements();
+                    }
+                    else
+                    {
+                        Debug.LogError("婕旂ず鏁版嵁鍒濆鍖栧け璐?);
+                    }
+                },
+                (error) => {
+                    Debug.LogError($"鍒濆鍖栨紨绀烘暟鎹椂鍑洪敊: {error}");
+                }
+            ));
+        }
+
+        private void OnClearTasksButtonClick()
+        {
+            if (simulationManager == null) return;
+
+            // 璋冪敤API娓呴櫎鎵€鏈変换鍔?
+            StartCoroutine(Network.ApiClient.Instance.ClearTasks(
+                (success) => {
+                    if (success)
+                    {
+                        Debug.Log("浠诲姟娓呴櫎鎴愬姛");
+                        // 鍒锋柊浠诲姟鍒楄〃
+                        StartCoroutine(RefreshTasks());
+                        // 鏇存柊UI
+                        UpdateUIElements();
+                    }
+                    else
+                    {
+                        Debug.LogError("浠诲姟娓呴櫎澶辫触");
+                    }
+                },
+                (error) => {
+                    Debug.LogError($"娓呴櫎浠诲姟鏃跺嚭閿? {error}");
+                }
+            ));
+        }
+
+        private IEnumerator RefreshTasks()
+        {
+            if (simulationManager != null)
+            {
+                simulationManager.RefreshTasks();
+                // 绛夊緟鏁版嵁鍒锋柊瀹屾垚锛堜及璁℃椂闂达級
+                yield return new WaitForSeconds(1f);
+            }
+        }
+
+        private void OnCloseInfoButtonClick()
+        {
+            if (infoPanel != null)
+            {
+                infoPanel.SetActive(false);
+            }
+        }
+
+        private void OnSimulationStarted()
+        {
+            UpdateUIElements();
+        }
+
+        private void OnSimulationInitialized()
+        {
+            int taskCount = (simulationManager != null && simulationManager.Tasks != null) ? simulationManager.Tasks.Count : 0;
+            Debug.Log($"[MainUIController] OnSimulationInitialized 琚皟鐢紝浠诲姟鏁? {taskCount}");
+            // 閲嶇疆鏇存柊棰戠巼闄愬埗锛屽己鍒舵洿鏂?
+            lastUIUpdateTime = 0f;
+            UpdateTaskList();
+            UpdateUIElements();
+        }
+
+        private void OnSimulationPaused()
+        {
+            UpdateUIElements();
+        }
+
+        private void OnSimulationReset()
+        {
+            UpdateUIElements();
+            UpdateTaskList();
+        }
+
+        private void OnDataUpdated()
+        {
+            // 鏁版嵁鏇存柊鏃朵笉浣跨敤棰戠巼闄愬埗锛屽洜涓哄悗绔凡缁忔帶鍒朵簡鏇存柊棰戠巼
+            Debug.Log($"[MainUIController] OnDataUpdated琚皟鐢?);
+
+            int satCount = (simulationManager != null && simulationManager.Satellites != null) ? simulationManager.Satellites.Count : 0;
+            int taskCount = (simulationManager != null && simulationManager.Tasks != null) ? simulationManager.Tasks.Count : 0;
+            Debug.Log($"[MainUIController] OnDataUpdated: 鍗槦鏁?{satCount}, 浠诲姟鏁?{taskCount}");
+
+            UpdateStatistics();
+            UpdateTaskList();
+
+            // 鏇存柊鍗槦鍜屽湴闈㈢珯鍙鍖?
+            if (satelliteVisualizer != null && simulationManager != null)
+            {
+                Debug.Log($"[MainUIController] 璋冪敤 satelliteVisualizer.UpdateSatellites");
+                satelliteVisualizer.UpdateSatellites(simulationManager.Satellites);
+            }
+            else
+            {
+                Debug.LogWarning($"[MainUIController] satelliteVisualizer涓簄ull, 鏃犳硶鏇存柊鍗槦鍙鍖?);
+            }
+            if (groundStationVisualizer != null && simulationManager != null)
+            {
+                Debug.Log($"[MainUIController] 璋冪敤 groundStationVisualizer.UpdateGroundStations");
+                groundStationVisualizer.UpdateGroundStations(simulationManager.GroundStations);
+            }
+            else
+            {
+                Debug.LogWarning($"[MainUIController] groundStationVisualizer涓簄ull, 鏃犳硶鏇存柊鍦伴潰绔欏彲瑙嗗寲");
+            }
+        }
+
+        private void OnAlgorithmChangedEvent(string algorithm)
+        {
+            // 鏇存柊涓嬫媺妗嗛€夋嫨
+            if (algorithmDropdown != null)
+            {
+                int index = GetAlgorithmIndex(algorithm);
+                if (index >= 0)
+                {
+                    algorithmDropdown.value = index;
+                }
+            }
+        }
+        #endregion
+
+        /// <summary>
+        /// 鑾峰彇绠楁硶绱㈠紩
+        /// </summary>
+        private int GetAlgorithmIndex(string algorithm)
+        {
+            switch (algorithm.ToLower())
+            {
+                case "fcfs":
+                    return 0;
+                case "sjf":
+                    return 1;
+                case "edd":
+                    return 2;
+                case "max_visibility":
+                    return 3;
+                default:
+                    return 0;
+            }
+        }
+
+        /// <summary>
+        /// 鏇存柊杩炴帴鐘舵€?
+        /// </summary>
+        private void UpdateConnectionStatus()
+        {
+            if (connectionStatusText != null)
+            {
+                bool connected = Network.ApiClient.Instance.IsConnected;
+                string lastError = Network.ApiClient.Instance.LastError;
+                connectionStatusText.text = connected
+                    ? "API: 宸茶繛鎺?
+                    : string.IsNullOrWhiteSpace(lastError) ? "API: 鏈繛鎺? : $"API: 鏈繛鎺?({lastError})";
+                connectionStatusText.color = connected ? Color.green : Color.red;
+            }
+        }
+
+        private void OnApiError(string error)
+        {
+            UpdateConnectionStatus();
+        }
+
+        /// <summary>
+        /// 鏄剧ず淇℃伅闈㈡澘
+        /// </summary>
+        public void ShowInfoPanel(string title, string details)
+        {
+            if (infoPanel == null) return;
+
+            if (selectedObjectText != null)
+                selectedObjectText.text = title;
+
+            if (objectDetailsText != null)
+                objectDetailsText.text = details;
+
+            infoPanel.SetActive(true);
+        }
+
+        void Start()
+        {
+            // 濡傛灉宸茬粡琚?Initialize() 鍒濆鍖栬繃锛岃烦杩?
+            if (isInitialized)
+            {
+                Debug.Log("[MainUIController] Start: 宸插垵濮嬪寲锛岃烦杩?);
+                return;
+            }
+
+            Debug.Log($"[MainUIController] Start called. autoCreateUI = {autoCreateUI}");
+
+            // 鑷姩鏌ユ壘寮曠敤锛堝鏋滄湭鍦↖nspector涓缃級
+            if (simulationManager == null)
+                simulationManager = Core.SimulationManager.Instance;
+
+            if (cameraController == null)
+                cameraController = FindObjectOfType<Visualization.CameraController>();
+
+            if (satelliteVisualizer == null)
+                satelliteVisualizer = FindObjectOfType<Visualization.SatelliteVisualizer>();
+
+            if (groundStationVisualizer == null)
+                groundStationVisualizer = FindObjectOfType<Visualization.GroundStationVisualizer>();
+
+            if (linkVisualizer == null)
+                linkVisualizer = FindObjectOfType<Visualization.LinkVisualizer>();
+
+            // 鑷姩鏌ユ壘鎴栧垱寤篣I鍏冪礌
+            if (autoCreateUI)
+            {
+                Debug.Log("[MainUIController] autoCreateUI is true, creating UI elements...");
+                FindOrCreateUIElements();
+                Debug.Log("[MainUIController] UI elements creation completed.");
+            }
+            else
+            {
+                Debug.Log("[MainUIController] autoCreateUI is false, using Inspector-assigned UI only.");
+            }
+
+            Initialize(simulationManager, cameraController, satelliteVisualizer, groundStationVisualizer, linkVisualizer);
+        }
+
+        /// <summary>
+        /// 鑷姩鏌ユ壘鎴栧垱寤篣I鍏冪礌
+        /// </summary>
+        private void FindOrCreateUIElements()
+        {
+            Debug.Log("[MainUIController] FindOrCreateUIElements 寮€濮嬫墽琛?);
+            Debug.Log($"[MainUIController] 褰撳墠鐘舵€? taskPanel={taskPanel}, taskListContent={taskListContent}, taskItemPrefab={taskItemPrefab}");
+
+            // 鏌ユ壘鍦烘櫙涓凡鏈夌殑Canvas锛屾垨鑰呭垱寤烘柊鐨?
+            Canvas canvas = FindObjectOfType<Canvas>();
+            if (canvas == null)
+            {
+                GameObject canvasGO = new GameObject("MainCanvas");
+                canvas = canvasGO.AddComponent<Canvas>();
+                canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                canvasGO.AddComponent<CanvasScaler>();
+                canvasGO.AddComponent<GraphicRaycaster>();
+            }
+            Transform canvasTransform = canvas.transform;
+            Debug.Log($"[MainUIController] Canvas: {canvas.name}");
+
+            // 鍒涘缓鎴栨煡鎵鹃潰鏉匡紙鍙湁鍦↖nspector涓湭璧嬪€兼椂鎵嶅垱寤猴級
+            // 璋冩暣浣嶇疆閬垮厤閲嶅彔锛氬乏涓婂拰鍙充笂鏀炬帶鍒?缁熻锛屽乏涓嬪拰鍙充笅鏀句换鍔?杩炴帴
+            if (controlPanel == null)
+            {
+                // 宸︿笂瑙掞細x璐熸柟鍚?宸?锛寉姝ｆ柟鍚?涓婂亸涓棿)
+                controlPanel = CreatePanel(canvasTransform, "ControlPanel", new Vector2(-400, 80), new Vector2(200, 400));
+                Debug.Log("[MainUIController] Created ControlPanel");
+            }
+
+            if (statisticsPanel == null)
+            {
+                // 鍙充笂瑙掞細x姝ｆ柟鍚?鍙?锛寉姝ｆ柟鍚?涓婂亸涓棿)
+                statisticsPanel = CreatePanel(canvasTransform, "StatisticsPanel", new Vector2(400, 115), new Vector2(200, 250));
+                Debug.Log("[MainUIController] Created StatisticsPanel");
+            }
+
+            if (taskPanel == null)
+            {
+                // 宸︿笅瑙掞細x璐熸柟鍚?宸?锛寉璐熸柟鍚?涓?
+                taskPanel = CreatePanel(canvasTransform, "TaskPanel", new Vector2(400, -165), new Vector2(200, 300));
+                Debug.Log($"[MainUIController] Created TaskPanel: {taskPanel}");
+            }
+
+            if (connectionPanel == null)
+            {
+                // 鍙充笅瑙掞細x姝ｆ柟鍚?鍙?锛寉璐熸柟鍚?涓嬪亸涓婁竴鐐癸紝閬垮厤鍜岀粺璁￠潰鏉垮お杩?
+                connectionPanel = CreatePanel(canvasTransform, "ConnectionPanel", new Vector2(-400, -175), new Vector2(200, 100));
+                Debug.Log("[MainUIController] Created ConnectionPanel");
+            }
+
+            if (infoPanel == null)
+            {
+                // 涓ぎ浣嶇疆锛堥粯璁ら殣钘忥級
+                infoPanel = CreatePanel(canvasTransform, "InfoPanel", new Vector2(0, 0), new Vector2(300, 200));
+                infoPanel.SetActive(false);
+                Debug.Log("[MainUIController] Created InfoPanel");
+            }
+
+            Debug.Log($"[MainUIController] 闈㈡澘鍒涘缓瀹屾垚: taskPanel={taskPanel}");
+
+            //-----------------------dropdown-----------------------------------
+
+            if(algorithmDropdown != null)
+            {
+                // 纭繚 dropdown 鐨勭埗绾т负 canvas
+                Transform dropdownTransform = algorithmDropdown.transform;
+                if (dropdownTransform.parent != canvasTransform)
+                {
+                    dropdownTransform.SetParent(canvasTransform, false);
+                }
+
+                // 璁剧疆 RectTransform 浣垮叾鍦?Canvas 涓婃纭樉绀?
+                RectTransform rect = dropdownTransform.GetComponent<RectTransform>();
+                if (rect == null)
+                {
+                    rect = dropdownTransform.gameObject.AddComponent<RectTransform>();
+                }
+
+                // 璁剧疆閿氱偣銆佷綅缃拰澶у皬锛堢ず渚嬶細鏀惧湪 controlPanel 涓嬫柟鎴栨寚瀹氫綅缃級
+                rect.anchorMin = new Vector2(0.5f, 0.5f);   // 宸︿笂瑙掗敋鐐?
+                rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0, 1);
+                rect.anchoredPosition = new Vector2(-490, 50); // 鐩稿浜庡乏涓婅鐨勪綅缃?
+                rect.sizeDelta = new Vector2(180, 30);         // 瀹藉害180锛岄珮搴?0
+
+                // 濡傛灉 dropdown 缁勪欢灏氭湭娣诲姞锛屽垯娣诲姞锛堝亣璁鹃渶瑕侊級
+                Dropdown dropdownComp = dropdownTransform.GetComponent<Dropdown>();
+                if (dropdownComp == null)
+                {
+                    dropdownComp = dropdownTransform.gameObject.AddComponent<Dropdown>();
+                }
+
+                // 鍙€夛細璁剧疆榛樿閫夐」
+                dropdownComp.options.Clear();
+                dropdownComp.options.Add(new Dropdown.OptionData("绠楁硶 A"));
+                dropdownComp.options.Add(new Dropdown.OptionData("绠楁硶 B"));
+                dropdownComp.options.Add(new Dropdown.OptionData("绠楁硶 C"));
+
+                Debug.Log("[MainUIController] algorithmDropdown added to canvas.");
+
+
+            }
+            else
+            {
+                Debug.LogWarning("[MainUIController] algorithmDropdown is null, cannot add to canvas.");
+            }
+
+
+
+            // 鍒涘缓鎺у埗闈㈡澘鍐呭锛堝彧鍦ㄥ厓绱犱负null鏃跺垱寤猴級
+            Debug.Log("[MainUIController] 寮€濮嬪垱寤洪潰鏉垮唴瀹?..");
+            CreateControlPanelContent();
+
+            // 鍒涘缓缁熻闈㈡澘鍐呭
+            CreateStatisticsPanelContent();
+
+            // 鍒涘缓浠诲姟闈㈡澘鍐呭
+            CreateTaskPanelContent();
+
+            // 鍒涘缓杩炴帴闈㈡澘鍐呭
+            CreateConnectionPanelContent();
+
+            // 鍒涘缓淇℃伅闈㈡澘鍐呭
+            CreateInfoPanelContent();
+            Debug.Log("[MainUIController] 鎵€鏈夐潰鏉垮唴瀹瑰垱寤哄畬鎴?);
+        }
+
+        /// <summary>
+        /// 鍒涘缓闈㈡澘
+        /// </summary>
+        private GameObject CreatePanel(Transform parent, string name, Vector2 anchoredPosition, Vector2 size)
+        {
+            GameObject panel = new GameObject(name);
+            panel.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = panel.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Image image = panel.AddComponent<Image>();
+            image.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
+
+            return panel;
+        }
+
+        /// <summary>
+        /// 鍒涘缓鏂囨湰缁勪欢
+        /// </summary>
+        private Text CreateText(Transform parent, string name, string text, Vector2 anchoredPosition, Vector2 size, int fontSize = 14)
+        {
+            GameObject textGO = new GameObject(name);
+            textGO.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = textGO.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Text textComponent = textGO.AddComponent<Text>();
+            textComponent.text = text;
+            textComponent.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            textComponent.fontSize = fontSize;
+            textComponent.color = Color.white;
+            textComponent.alignment = TextAnchor.MiddleLeft;
+
+            return textComponent;
+        }
+
+        /// <summary>
+        /// 鍒涘缓鎸夐挳
+        /// </summary>
+        private Button CreateButton(Transform parent, string name, string text, Vector2 anchoredPosition, Vector2 size)
+        {
+            GameObject buttonGO = new GameObject(name);
+            buttonGO.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = buttonGO.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Image image = buttonGO.AddComponent<Image>();
+            image.color = new Color(0.2f, 0.4f, 0.8f, 1f);
+
+            Button button = buttonGO.AddComponent<Button>();
+
+            // 鍒涘缓鎸夐挳鏂囨湰
+            Text buttonText = CreateText(buttonGO.transform, "Text", text, Vector2.zero, size, 14);
+            buttonText.alignment = TextAnchor.MiddleCenter;
+
+            return button;
+        }
+
+        /// <summary>
+        /// 鍒涘缓婊戝潡
+        /// </summary>
+        private Slider CreateSlider(Transform parent, string name, Vector2 anchoredPosition, Vector2 size)
+        {
+            GameObject sliderGO = new GameObject(name);
+            sliderGO.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = sliderGO.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Slider slider = sliderGO.AddComponent<Slider>();
+
+            // 鍒涘缓鑳屾櫙
+            GameObject background = new GameObject("Background");
+            background.transform.SetParent(sliderGO.transform, false);
+            RectTransform bgRect = background.AddComponent<RectTransform>();
+            bgRect.anchorMin = Vector2.zero;
+            bgRect.anchorMax = Vector2.one;
+            bgRect.sizeDelta = Vector2.zero;
+            Image bgImage = background.AddComponent<Image>();
+            bgImage.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+
+            // 鍒涘缓濉厖鍖哄煙
+            GameObject fillArea = new GameObject("Fill Area");
+            fillArea.transform.SetParent(sliderGO.transform, false);
+            RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
+            fillAreaRect.anchorMin = Vector2.zero;
+            fillAreaRect.anchorMax = Vector2.one;
+            fillAreaRect.sizeDelta = Vector2.zero;
+
+            GameObject fill = new GameObject("Fill");
+            fill.transform.SetParent(fillArea.transform, false);
+            RectTransform fillRect = fill.AddComponent<RectTransform>();
+            fillRect.anchorMin = Vector2.zero;
+            fillRect.anchorMax = Vector2.one;
+            fillRect.sizeDelta = Vector2.zero;
+            Image fillImage = fill.AddComponent<Image>();
+            fillImage.color = new Color(0.2f, 0.6f, 1f, 1f);
+
+            slider.fillRect = fillRect;
+
+            return slider;
+        }
+
+        /// <summary>
+        /// 鍒涘缓涓嬫媺妗?
+        /// </summary>
+        private Dropdown CreateDropdown(Transform parent, string name, Vector2 anchoredPosition, Vector2 size)
+        {
+            GameObject dropdownGO = new GameObject(name);
+            dropdownGO.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = dropdownGO.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Image image = dropdownGO.AddComponent<Image>();
+            image.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+
+            Dropdown dropdown = dropdownGO.AddComponent<Dropdown>();
+
+            // 鍒涘缓鏍囩鏂囨湰
+            Text labelText = CreateText(dropdownGO.transform, "Label", "Select...", Vector2.zero, new Vector2(size.x - 20, size.y), 14);
+            labelText.alignment = TextAnchor.MiddleLeft;
+            dropdown.captionText = labelText;
+
+            return dropdown;
+        }
+
+        /// <summary>
+        /// 鍒涘缓寮€鍏?
+        /// </summary>
+        private Toggle CreateToggle(Transform parent, string name, string label, Vector2 anchoredPosition)
+        {
+            GameObject toggleGO = new GameObject(name);
+            toggleGO.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = toggleGO.AddComponent<RectTransform>();
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = new Vector2(160, 20);
+
+            Toggle toggle = toggleGO.AddComponent<Toggle>();
+
+            // 鍒涘缓鑳屾櫙
+            GameObject background = new GameObject("Background");
+            background.transform.SetParent(toggleGO.transform, false);
+            RectTransform bgRect = background.AddComponent<RectTransform>();
+            bgRect.anchorMin = new Vector2(0, 0.5f);
+            bgRect.anchorMax = new Vector2(0, 0.5f);
+            bgRect.pivot = new Vector2(0, 0.5f);
+            bgRect.anchoredPosition = Vector2.zero;
+            bgRect.sizeDelta = new Vector2(20, 20);
+            Image bgImage = background.AddComponent<Image>();
+            bgImage.color = Color.white;
+            toggle.targetGraphic = bgImage;
+
+            // 鍒涘缓鍕鹃€夋爣璁?
+            GameObject checkmark = new GameObject("Checkmark");
+            checkmark.transform.SetParent(background.transform, false);
+            RectTransform checkRect = checkmark.AddComponent<RectTransform>();
+            checkRect.anchorMin = Vector2.zero;
+            checkRect.anchorMax = Vector2.one;
+            checkRect.sizeDelta = Vector2.zero;
+            Image checkImage = checkmark.AddComponent<Image>();
+            checkImage.color = new Color(0.2f, 0.6f, 1f, 1f);
+            toggle.graphic = checkImage;
+
+            // 鍒涘缓鏍囩
+            Text labelText = CreateText(toggleGO.transform, "Label", label, new Vector2(25, 0), new Vector2(130, 20), 12);
+            labelText.alignment = TextAnchor.MiddleLeft;
+
+            return toggle;
+        }
+
+        /// <summary>
+        /// 鍒涘缓鎺у埗闈㈡澘鍐呭
+        /// </summary>
+        private void CreateControlPanelContent()
+        {
+            if (controlPanel == null) return;
+
+            // 闈㈡澘灏哄 200x300锛屽潗鏍囦粠涓績(0,0)寮€濮嬶紝y鑼冨洿澶х害 -150 鍒?+150
+            // 鏍囬
+            CreateText(controlPanel.transform, "Title", "鎺у埗闈㈡澘", new Vector2(0, 130), new Vector2(180, 25), 16);
+
+            // 鐘舵€佹枃鏈?
+            if (statusText == null)
+                statusText = CreateText(controlPanel.transform, "StatusText", "鐘舵€? 宸叉殏鍋?, new Vector2(0, 105), new Vector2(180, 20), 12);
+
+            // 鏃堕棿鏂囨湰
+            if (timeText == null)
+                timeText = CreateText(controlPanel.transform, "TimeText", "浠跨湡鏃堕棿: 00:00", new Vector2(0, 85), new Vector2(180, 20), 12);
+
+            // FPS鏂囨湰
+            if (fpsText == null)
+                fpsText = CreateText(controlPanel.transform, "FPSText", "FPS: 60", new Vector2(0, 65), new Vector2(180, 20), 12);
+
+            // 寮€濮嬫寜閽拰鏆傚仠鎸夐挳骞舵帓
+            if (startButton == null)
+                startButton = CreateButton(controlPanel.transform, "StartButton", "寮€濮?, new Vector2(-48, 30), new Vector2(75, 28));
+
+            if (pauseButton == null)
+                pauseButton = CreateButton(controlPanel.transform, "PauseButton", "鏆傚仠", new Vector2(48, 30), new Vector2(75, 28));
+
+            // 閲嶇疆鎸夐挳
+            if (resetButton == null)
+                resetButton = CreateButton(controlPanel.transform, "ResetButton", "閲嶇疆", new Vector2(0, -5), new Vector2(160, 28));
+
+            // 绠楁硶涓嬫媺妗?
+            if (algorithmDropdown == null)
+                algorithmDropdown = CreateDropdown(controlPanel.transform, "AlgorithmDropdown", new Vector2(0, -40), new Vector2(160, 28));
+
+            // 鏃堕棿缂╂斁婊戝潡鍜屽€兼枃鏈?
+            if (timeScaleSlider == null)
+                timeScaleSlider = CreateSlider(controlPanel.transform, "TimeScaleSlider", new Vector2(-25, -75), new Vector2(100, 20));
+
+            if (timeScaleValueText == null)
+                timeScaleValueText = CreateText(controlPanel.transform, "TimeScaleValue", "x1.0", new Vector2(60, -75), new Vector2(45, 20), 12);
+
+            // 鏄剧ず寮€鍏?- 涓変釜寮€鍏冲瀭鐩存帓鍒?
+            if (showOrbitsToggle == null)
+                showOrbitsToggle = CreateToggle(controlPanel.transform, "ShowOrbitsToggle", "鏄剧ず杞ㄩ亾", new Vector2(0, -105));
+
+            if (showLinksToggle == null)
+                showLinksToggle = CreateToggle(controlPanel.transform, "ShowLinksToggle", "鏄剧ず閾捐矾", new Vector2(0, -125));
+
+            if (showLabelsToggle == null)
+                showLabelsToggle = CreateToggle(controlPanel.transform, "ShowLabelsToggle", "鏄剧ず鏍囩", new Vector2(0, -145));
+        }
+
+        /// <summary>
+        /// 鍒涘缓缁熻闈㈡澘鍐呭
+        /// </summary>
+        private void CreateStatisticsPanelContent()
+        {
+            if (statisticsPanel == null) return;
+
+            // 闈㈡澘灏哄 200x250
+            // 鏍囬
+            CreateText(statisticsPanel.transform, "Title", "缁熻淇℃伅", new Vector2(0, 105), new Vector2(180, 25), 16);
+
+            // 鍚勯」缁熻鏂囨湰 - 绱у噾鍨傜洿鎺掑垪
+            if (satellitesCountText == null)
+                satellitesCountText = CreateText(statisticsPanel.transform, "SatellitesCount", "鍗槦鏁伴噺: 0", new Vector2(0, 80), new Vector2(180, 20), 12);
+
+            if (tasksCountText == null)
+                tasksCountText = CreateText(statisticsPanel.transform, "TasksCount", "浠诲姟鏁伴噺: 0", new Vector2(0, 60), new Vector2(180, 20), 12);
+
+            if (processedTasksText == null)
+                processedTasksText = CreateText(statisticsPanel.transform, "ProcessedTasks", "宸插鐞? 0", new Vector2(0, 40), new Vector2(180, 20), 12);
+
+            if (successRateText == null)
+                successRateText = CreateText(statisticsPanel.transform, "SuccessRate", "鎴愬姛鐜? 0%", new Vector2(0, 20), new Vector2(180, 20), 12);
+
+            if (avgProcessingTimeText == null)
+                avgProcessingTimeText = CreateText(statisticsPanel.transform, "AvgTime", "骞冲潎澶勭悊鏃堕棿: 0s", new Vector2(0, 0), new Vector2(180, 20), 12);
+
+            if (activeLinksText == null)
+                activeLinksText = CreateText(statisticsPanel.transform, "ActiveLinks", "娲昏穬閾捐矾: 0", new Vector2(0, -20), new Vector2(180, 20), 12);
+
+            if (avgLoadText == null)
+                avgLoadText = CreateText(statisticsPanel.transform, "AvgLoad", "骞冲潎璐熻浇: 0%", new Vector2(0, -40), new Vector2(180, 20), 12);
+        }
+
+        /// <summary>
+        /// 鍒涘缓浠诲姟闈㈡澘鍐呭
+        /// </summary>
+        private void CreateTaskPanelContent()
+        {
+            Debug.Log($"[MainUIController] CreateTaskPanelContent 寮€濮? taskPanel={taskPanel}");
+
+            if (taskPanel == null)
+            {
+                Debug.LogError("[MainUIController] CreateTaskPanelContent: taskPanel is null! 鏃犳硶鍒涘缓浠诲姟鍒楄〃鍐呭");
+                return;
+            }
+
+            // 闈㈡澘灏哄 200x200
+            // 鏍囬
+            CreateText(taskPanel.transform, "Title", "浠诲姟鍒楄〃", new Vector2(0, 80), new Vector2(180, 25), 16);
+
+            // 娓呴櫎浠诲姟鎸夐挳鏀惧湪搴曢儴
+            if (clearTasksButton == null)
+                clearTasksButton = CreateButton(taskPanel.transform, "ClearTasksButton", "娓呴櫎浠诲姟", new Vector2(0, -75), new Vector2(160, 28));
+
+            // 浠诲姟鍒楄〃鍐呭瀹瑰櫒锛堥渶瑕佹纭殑RectTransform璁剧疆锛?
+            if (taskListContent == null)
+            {
+                Debug.Log("[MainUIController] CreateTaskPanelContent: 鍒涘缓鏂扮殑 taskListContent");
+                GameObject contentGO = new GameObject("TaskListContent");
+                contentGO.transform.SetParent(taskPanel.transform, false);
+                taskListContent = contentGO.transform;
+
+                // 娣诲姞骞堕厤缃甊ectTransform锛屼娇浠诲姟椤瑰湪姝ｇ‘浣嶇疆鏄剧ず
+                RectTransform contentRect = contentGO.AddComponent<RectTransform>();
+                contentRect.anchorMin = new Vector2(0, 0);
+                contentRect.anchorMax = new Vector2(1, 1);
+                contentRect.pivot = new Vector2(0.5f, 1);
+                contentRect.anchoredPosition = new Vector2(0, -25); // 鍦ㄦ爣棰樹笅鏂?
+                contentRect.sizeDelta = new Vector2(0, -100); // 鐣欏嚭搴曢儴鎸夐挳绌洪棿
+
+                // 娣诲姞涓€涓崐閫忔槑鑳屾櫙浠ヤ究璋冭瘯
+                Image bgImage = contentGO.AddComponent<Image>();
+                bgImage.color = new Color(0.2f, 0.3f, 0.2f, 0.5f); // 缁胯壊璋冨崐閫忔槑鑳屾櫙
+
+                Debug.Log($"[MainUIController] CreateTaskPanelContent: taskListContent 鍒涘缓瀹屾垚 = {taskListContent}");
+            }
+            else
+            {
+                Debug.Log($"[MainUIController] CreateTaskPanelContent: taskListContent 宸插瓨鍦?= {taskListContent}");
+            }
+
+            // 鍒涘缓浠诲姟椤归鍒朵綋锛堝鏋滄湭鍦↖nspector涓祴鍊硷級
+            if (taskItemPrefab == null)
+            {
+                taskItemPrefab = CreateDefaultTaskItemPrefab();
+                Debug.Log("[MainUIController] Created default taskItemPrefab");
+            }
+
+            Debug.Log($"[MainUIController] CreateTaskPanelContent 瀹屾垚: taskListContent={taskListContent}, taskItemPrefab={taskItemPrefab}");
+        }
+
+        /// <summary>
+        /// 鍒涘缓榛樿鐨勪换鍔￠」棰勫埗浣?
+        /// </summary>
+        private GameObject CreateDefaultTaskItemPrefab()
+        {
+            GameObject prefab = new GameObject("TaskItemPrefab");
+            prefab.SetActive(false); // 棰勫埗浣撻粯璁ょ鐢紝瀹炰緥鍖栨椂鍚敤
+
+            // 鏍瑰璞?RectTransform
+            RectTransform rootRect = prefab.AddComponent<RectTransform>();
+            rootRect.sizeDelta = new Vector2(180, 60);
+            rootRect.pivot = new Vector2(0.5f, 1f);
+
+            // 娣诲姞 TaskItemUI 缁勪欢
+            TaskItemUI taskItemUI = prefab.AddComponent<TaskItemUI>();
+
+            // 鍒涘缓鑳屾櫙
+            GameObject bgObj = new GameObject("Background");
+            bgObj.transform.SetParent(prefab.transform, false);
+            RectTransform bgRect = bgObj.AddComponent<RectTransform>();
+            bgRect.anchorMin = Vector2.zero;
+            bgRect.anchorMax = Vector2.one;
+            bgRect.sizeDelta = Vector2.zero;
+            Image bgImage = bgObj.AddComponent<Image>();
+            bgImage.color = new Color(0.15f, 0.15f, 0.2f, 0.9f);
+
+            // 浠诲姟鍚嶇О鏂囨湰
+            GameObject nameObj = new GameObject("TaskName");
+            nameObj.transform.SetParent(prefab.transform, false);
+            RectTransform nameRect = nameObj.AddComponent<RectTransform>();
+            nameRect.anchorMin = new Vector2(0, 1);
+            nameRect.anchorMax = new Vector2(1, 1);
+            nameRect.pivot = new Vector2(0, 1);
+            nameRect.anchoredPosition = new Vector2(5, -5);
+            nameRect.sizeDelta = new Vector2(-10, 18);
+            Text nameText = nameObj.AddComponent<Text>();
+            nameText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            nameText.fontSize = 12;
+            nameText.color = Color.white;
+            nameText.alignment = TextAnchor.MiddleLeft;
+
+            // 鐘舵€佸拰浼樺厛绾э紙鍚屼竴琛岋級
+            GameObject statusObj = new GameObject("Status");
+            statusObj.transform.SetParent(prefab.transform, false);
+            RectTransform statusRect = statusObj.AddComponent<RectTransform>();
+            statusRect.anchorMin = new Vector2(0, 1);
+            statusRect.anchorMax = new Vector2(0.5f, 1);
+            statusRect.pivot = new Vector2(0, 1);
+            statusRect.anchoredPosition = new Vector2(5, -24);
+            statusRect.sizeDelta = new Vector2(0, 14);
+            Text statusText = statusObj.AddComponent<Text>();
+            statusText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            statusText.fontSize = 10;
+            statusText.color = Color.gray;
+            statusText.alignment = TextAnchor.MiddleLeft;
+
+            GameObject priorityObj = new GameObject("Priority");
+            priorityObj.transform.SetParent(prefab.transform, false);
+            RectTransform priorityRect = priorityObj.AddComponent<RectTransform>();
+            priorityRect.anchorMin = new Vector2(0.5f, 1);
+            priorityRect.anchorMax = new Vector2(1, 1);
+            priorityRect.pivot = new Vector2(0, 1);
+            priorityRect.anchoredPosition = new Vector2(-5, -24);
+            priorityRect.sizeDelta = new Vector2(0, 14);
+            Text priorityText = priorityObj.AddComponent<Text>();
+            priorityText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            priorityText.fontSize = 10;
+            priorityText.color = Color.gray;
+            priorityText.alignment = TextAnchor.MiddleRight;
+
+            // 杩涘害鏉¤儗鏅?
+            GameObject progressBgObj = new GameObject("ProgressBackground");
+            progressBgObj.transform.SetParent(prefab.transform, false);
+            RectTransform progressBgRect = progressBgObj.AddComponent<RectTransform>();
+            progressBgRect.anchorMin = new Vector2(0, 0);
+            progressBgRect.anchorMax = new Vector2(1, 0);
+            progressBgRect.pivot = new Vector2(0.5f, 0);
+            progressBgRect.anchoredPosition = new Vector2(0, 5);
+            progressBgRect.sizeDelta = new Vector2(-10, 12);
+            Image progressBgImage = progressBgObj.AddComponent<Image>();
+            progressBgImage.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+
+            // 杩涘害鏉″～鍏?
+            GameObject progressFillObj = new GameObject("ProgressFill");
+            progressFillObj.transform.SetParent(progressBgObj.transform, false);
+            RectTransform progressFillRect = progressFillObj.AddComponent<RectTransform>();
+            progressFillRect.anchorMin = Vector2.zero;
+            progressFillRect.anchorMax = new Vector2(1, 1);
+            progressFillRect.pivot = new Vector2(0, 0.5f);
+            progressFillRect.anchoredPosition = Vector2.zero;
+            progressFillRect.sizeDelta = Vector2.zero;
+            Image progressFillImage = progressFillObj.AddComponent<Image>();
+            progressFillImage.color = new Color(0.2f, 0.6f, 1f, 1f);
+            progressFillImage.type = Image.Type.Filled;
+            progressFillImage.fillMethod = Image.FillMethod.Horizontal;
+
+            // 杩涘害鏂囨湰
+            GameObject progressTextObj = new GameObject("ProgressText");
+            progressTextObj.transform.SetParent(progressBgObj.transform, false);
+            RectTransform progressTextRect = progressTextObj.AddComponent<RectTransform>();
+            progressTextRect.anchorMin = Vector2.zero;
+            progressTextRect.anchorMax = Vector2.one;
+            progressTextRect.sizeDelta = Vector2.zero;
+            Text progressText = progressTextObj.AddComponent<Text>();
+            progressText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            progressText.fontSize = 9;
+            progressText.color = Color.white;
+            progressText.alignment = TextAnchor.MiddleCenter;
+
+            // 浣跨敤鍙嶅皠璁剧疆 TaskItemUI 鐨勭鏈夊瓧娈碉紙鍥犱负瀹冧滑鏄?SerializeField锛?
+            System.Reflection.FieldInfo nameField = typeof(TaskItemUI).GetField("taskNameText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            System.Reflection.FieldInfo statusField = typeof(TaskItemUI).GetField("taskStatusText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            System.Reflection.FieldInfo priorityField = typeof(TaskItemUI).GetField("taskPriorityText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            System.Reflection.FieldInfo progressTextField = typeof(TaskItemUI).GetField("taskProgressText",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            System.Reflection.FieldInfo progressBarField = typeof(TaskItemUI).GetField("progressBar",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            nameField?.SetValue(taskItemUI, nameText);
+            statusField?.SetValue(taskItemUI, statusText);
+            priorityField?.SetValue(taskItemUI, priorityText);
+            progressTextField?.SetValue(taskItemUI, progressText);
+            progressBarField?.SetValue(taskItemUI, progressFillImage);
+
+            return prefab;
+        }
+
+        /// <summary>
+        /// 鍒涘缓杩炴帴闈㈡澘鍐呭
+        /// </summary>
+        private void CreateConnectionPanelContent()
+        {
+            if (connectionPanel == null) return;
+
+            // 闈㈡澘灏哄 200x100
+            // 鏍囬
+            CreateText(connectionPanel.transform, "Title", "杩炴帴鐘舵€?, new Vector2(0, 35), new Vector2(180, 20), 16);
+
+            // 杩炴帴鐘舵€佹枃鏈?
+            if (connectionStatusText == null)
+                connectionStatusText = CreateText(connectionPanel.transform, "Status", "API: 鏈繛鎺?, new Vector2(0, 12), new Vector2(180, 20), 12);
+
+            // 涓や釜鎸夐挳骞舵帓鏀剧疆
+            if (reconnectButton == null)
+                reconnectButton = CreateButton(connectionPanel.transform, "ReconnectButton", "閲嶆柊杩炴帴", new Vector2(-48, -22), new Vector2(75, 26));
+
+            if (initializeDemoButton == null)
+                initializeDemoButton = CreateButton(connectionPanel.transform, "InitDemoButton", "鍒濆鍖?, new Vector2(48, -22), new Vector2(75, 26));
+        }
+
+        /// <summary>
+        /// 鍒涘缓淇℃伅闈㈡澘鍐呭
+        /// </summary>
+        private void CreateInfoPanelContent()
+        {
+            if (infoPanel == null) return;
+
+            // 闈㈡澘灏哄 300x200
+            // 鏍囬
+            if (selectedObjectText == null)
+                selectedObjectText = CreateText(infoPanel.transform, "Title", "瀵硅薄淇℃伅", new Vector2(0, 80), new Vector2(280, 25), 16);
+
+            // 璇︽儏鏂囨湰 - 鍙粴鍔ㄥ尯鍩?
+            if (objectDetailsText == null)
+            {
+                objectDetailsText = CreateText(infoPanel.transform, "Details", "閫夋嫨瀵硅薄鏌ョ湅璇︽儏", new Vector2(0, 10), new Vector2(280, 100), 12);
+                objectDetailsText.alignment = TextAnchor.UpperLeft;
+            }
+
+            // 鍏抽棴鎸夐挳
+            if (closeInfoButton == null)
+                closeInfoButton = CreateButton(infoPanel.transform, "CloseButton", "鍏抽棴", new Vector2(0, -75), new Vector2(100, 28));
+        }
+
+        void Update()
+        {
+            // 鏇存柊FPS
+            UpdateFPS();
+
+            // 瀹氭湡鏇存柊鍩烘湰UI鍏冪礌锛堢姸鎬併€佹椂闂寸瓑锛?
+            if (Time.time - lastUIUpdateTime >= uiUpdateInterval)
+            {
+                // 鍙洿鏂板熀鏈琔I锛屼笉瑙﹀彂瀹屾暣鐨勬暟鎹洿鏂?
+                if (statusText != null && simulationManager != null)
+                {
+                    string status = simulationManager.IsRunning ? "杩愯涓? : "宸叉殏鍋?;
+                    statusText.text = $"鐘舵€? {status}";
+                }
+                if (timeText != null && simulationManager != null)
+                {
+                    timeText.text = $"浠跨湡鏃堕棿: {FormatTime(simulationManager.SimulationTime)}";
+                }
+                lastUIUpdateTime = Time.time;
+            }
+        }
+
+        /// <summary>
+        /// 鏇存柊FPS鏄剧ず
+        /// </summary>
+        private void UpdateFPS()
+        {
+            frameCount++;
+            fpsUpdateTime += Time.unscaledDeltaTime;
+
+            if (fpsUpdateTime >= 0.5f) // 姣?.5绉掓洿鏂颁竴娆?
+            {
+                currentFPS = frameCount / fpsUpdateTime;
+                frameCount = 0;
+                fpsUpdateTime = 0f;
+
+                if (fpsText != null)
+                {
+                    fpsText.text = $"FPS: {currentFPS:F1}";
+                }
+            }
+        }
+
+        void OnDestroy()
+        {
+            // 娓呯悊浜嬩欢鐩戝惉鍣?
+            if (simulationManager != null)
+            {
+                simulationManager.OnSimulationStarted -= OnSimulationStarted;
+                simulationManager.OnSimulationPaused -= OnSimulationPaused;
+                simulationManager.OnSimulationReset -= OnSimulationReset;
+                simulationManager.OnDataUpdated -= OnDataUpdated;
+                simulationManager.OnAlgorithmChanged -= OnAlgorithmChangedEvent;
+                simulationManager.OnSimulationInitialized -= OnSimulationInitialized;
+            }
+
+            Network.ApiClient.Instance.OnConnectionStatusChanged -= UpdateConnectionStatus;
+            Network.ApiClient.Instance.OnError -= OnApiError;
+        }
+    }
+
+    /// <summary>
+    /// 浠诲姟椤筓I缁勪欢
+    /// </summary>
+    public class TaskItemUI : MonoBehaviour
+    {
+        [SerializeField] private Text taskNameText;
+        [SerializeField] private Text taskStatusText;
+        [SerializeField] private Text taskPriorityText;
+        [SerializeField] private Text taskProgressText;
+        [SerializeField] private Image progressBar;
+        [SerializeField] private Color pendingColor = Color.gray;
+        [SerializeField] private Color assignedColor = Color.yellow;
+        [SerializeField] private Color processingColor = Color.blue;
+        [SerializeField] private Color completedColor = Color.green;
+        [SerializeField] private Color failedColor = Color.red;
+
+        private Core.Task taskData;
+
+        public void Initialize(Core.Task task)
+        {
+            taskData = task;
+            UpdateUI();
+        }
+
+//---------------------------------------------------------------------------------------------------------------------------------
+        private void UpdateUI()
+        {
+            if (taskData == null) return;
+
+            if (taskNameText != null)
+                taskNameText.text = taskData.name;
+
+            if (taskStatusText != null)
+            {
+                taskStatusText.text = GetStatusText(taskData.status);
+                taskStatusText.color = GetStatusColor(taskData.status);
+            }
+
+            if (taskPriorityText != null)
+                taskPriorityText.text = $"浼樺厛绾? {taskData.priority}";
+
+            if (taskProgressText != null)
+                taskProgressText.text = $"{taskData.progress:P0}";
+
+            if (progressBar != null)
+            {
+                progressBar.fillAmount = taskData.progress;
+                progressBar.color = GetProgressColor(taskData.status, taskData.progress);
+            }
+        }
+
+        private string GetStatusText(string status)
+        {
+            switch (status?.ToLower())
+            {
+                case "pending": return "绛夊緟涓?;
+                case "assigned": return "宸插垎閰?;
+                case "running": return "澶勭悊涓?;
+                case "processing": return "澶勭悊涓?;
+                case "completed": return "宸插畬鎴?;
+                case "failed": return "澶辫触";
+                default: return "鏈煡";
+            }
+        }
+
+        private Color GetStatusColor(string status)
+        {
+            switch (status?.ToLower())
+            {
+                case "pending": return pendingColor;
+                case "assigned": return assignedColor;
+                case "running": return processingColor;
+                case "processing": return processingColor;
+                case "completed": return completedColor;
+                case "failed": return failedColor;
+                default: return Color.white;
+            }
+        }
+
+        private Color GetProgressColor(string status, float progress)
+        {
+            string normalizedStatus = status?.ToLower();
+            if (normalizedStatus == "completed") return completedColor;
+            if (normalizedStatus == "failed") return failedColor;
+
+            // 鏍规嵁杩涘害娓愬彉
+            return Color.Lerp(processingColor, completedColor, progress);
+        }
+    }
+}
+#endregion 浜嬩欢澶勭悊
+
+

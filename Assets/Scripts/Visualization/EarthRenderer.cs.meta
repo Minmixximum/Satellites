@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: BywfvSKqWyjEiTRWWx3ybr0ElUP331yRQqAH6W5CWyBiRa8ZBSK5jwI=
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - earthSphere: {instanceID: 0}
+  - atmosphereSphere: {instanceID: 0}
+  - earthMaterial: {fileID: 2100000, guid: 5831fbe3e945bc84180d0ff64c29dbae, type: 2}
+  - atmosphereMaterial: {instanceID: 0}
+  - earthTexture: {fileID: 2800000, guid: 0b89230b73cab0f47a5aac5db6a108d4, type: 3}
+  - nightTexture: {instanceID: 0}
+  - sunLight: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

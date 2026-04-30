@@ -1,0 +1,555 @@
+﻿using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace SatelliteEdgeComputing.Core
+{
+    /// <summary>
+    /// 浠跨湡绠＄悊鍣紙鍗曚緥锛?    /// </summary>
+    public class SimulationManager : MonoBehaviour
+    {
+        private static SimulationManager _instance;
+        public static SimulationManager Instance
+        {
+            get
+            {
+                if (_instance == null)
+                {
+                    GameObject go = new GameObject("SimulationManager");
+                    _instance = go.AddComponent<SimulationManager>();
+                    DontDestroyOnLoad(go);
+                }
+                return _instance;
+            }
+        }
+
+        [Header("浠跨湡鐘舵€?)]
+        [SerializeField] private bool isInitialized = false;
+        [SerializeField] private bool isRunning = false;
+        [SerializeField] private float simulationTime = 0f;
+        [SerializeField] private float updateInterval = 1.0f; // 鏁版嵁鏇存柊闂撮殧锛堢锛?        [SerializeField] private SimulationConfig config = new SimulationConfig();
+
+        [Header("鏃堕棿鍔犻€?)]
+        [SerializeField] private float speedFactor = 60.0f; // 榛樿60鍊嶉€?        [SerializeField] private double earthRotationAngle = 0.0; // 鍦扮悆鏃嬭浆瑙掑害锛堝姬搴︼級
+        private DateTime? simStartTime = null; // 妯℃嫙寮€濮嬫椂闂?        private DateTime? simCurrentTime = null; // 褰撳墠妯℃嫙鏃堕棿
+
+        [Header("鏁版嵁")]
+        [SerializeField] private List<Satellite> satellites = new List<Satellite>();
+        [SerializeField] private List<GroundStation> groundStations = new List<GroundStation>();
+        [SerializeField] private List<Task> tasks = new List<Task>();
+
+        [Header("鎬ц兘缁熻")]
+        [SerializeField] private int totalTasksProcessed = 0;
+        [SerializeField] private int tasksCompleted = 0;
+        [SerializeField] private int tasksFailed = 0;
+        [SerializeField] private float averageProcessingTime = 0f;
+
+        // 浜嬩欢
+        public event Action OnSimulationInitialized;
+        public event Action OnSimulationStarted;
+        public event Action OnSimulationPaused;
+        public event Action OnSimulationReset;
+        public event Action OnDataUpdated;
+        public event Action<string> OnAlgorithmChanged;
+        public event Action<float> OnSpeedFactorChanged;
+        public event Action<double> OnEarthRotationUpdated;
+
+        // 灞炴€?        public bool IsRunning => isRunning;
+        public bool IsInitialized => isInitialized;
+        public float SimulationTime => simulationTime;
+        public SimulationConfig Config => config;
+        public List<Satellite> Satellites => satellites;
+        public List<GroundStation> GroundStations => groundStations;
+        public List<Task> Tasks => tasks;
+
+        // 鏃堕棿鍔犻€熷睘鎬?        public float SpeedFactor => speedFactor;
+        public double EarthRotationAngle => earthRotationAngle;
+        public DateTime? SimCurrentTime => simCurrentTime;
+        public DateTime? SimStartTime => simStartTime;
+
+        // 缁熻灞炴€?        public int TotalTasksProcessed => totalTasksProcessed;
+        public int TasksCompleted => tasksCompleted;
+        public int TasksFailed => tasksFailed;
+        public float SuccessRate => totalTasksProcessed > 0 ? (float)tasksCompleted / totalTasksProcessed : 0f;
+        public float AverageProcessingTime => averageProcessingTime;
+        public bool UseBackend => useBackend;
+
+        private Coroutine updateCoroutine;
+
+        /// <summary>
+        /// 鍒濆鍖栦豢鐪?        /// </summary>
+        public void Initialize()
+        {
+            if (isInitialized) return;
+
+            Debug.Log("鍒濆鍖栦豢鐪熺鐞嗗櫒...");
+
+            // 鍔犺浇閰嶇疆
+            config = new SimulationConfig
+            {
+                algorithm = "fcfs",
+                timeScale = 1.0f,
+                maxTasks = 100,
+                showOrbits = true,
+                showLinks = true
+            };
+
+            // 娴嬭瘯API杩炴帴
+            StartCoroutine(Network.ApiClient.Instance.TestConnection((connected) =>
+            {
+                useBackend = connected;
+                if (connected)
+                {
+                    Debug.Log("API杩炴帴鎴愬姛锛屽紑濮嬪姞杞芥暟鎹?..");
+                    LoadInitialData();
+                }
+                else
+                {
+                    Debug.LogWarning("API杩炴帴澶辫触锛屼娇鐢ㄦā鎷熸暟鎹?..");
+                    LoadMockData();
+                }
+            }));
+        }
+
+        /// <summary>
+        /// 鍔犺浇鍒濆鏁版嵁
+        /// </summary>
+        private void LoadInitialData()
+        {
+            if (!useBackend || !Network.ApiClient.Instance.IsConnected)
+            {
+                LoadMockData();
+                return;
+            }
+
+            StartCoroutine(LoadAllData());
+        }
+
+        private IEnumerator LoadAllData()
+        {
+            // 骞惰鍔犺浇鎵€鏈夋暟鎹?            bool satellitesLoaded = false;
+            bool stationsLoaded = false;
+            bool tasksLoaded = false;
+
+            StartCoroutine(Network.ApiClient.Instance.GetSatellites(
+                (satelliteList) =>
+                {
+                    satellites = satelliteList;
+                    satellitesLoaded = true;
+                    
+                    Debug.Log($"鍔犺浇浜唟satelliteList.Count}棰楀崼鏄?);
+                },
+                (error) => { Debug.LogError($"鍔犺浇鍗槦澶辫触: {error}锛屼娇鐢ㄦā鎷熸暟鎹?); satellites = Network.ApiClient.Instance.GetMockSatellites(); satellitesLoaded = true; }
+            ));
+
+            StartCoroutine(Network.ApiClient.Instance.GetGroundStations(
+                (stationList) =>
+                {
+                    groundStations = stationList;
+                    stationsLoaded = true;
+                    Debug.Log($"鍔犺浇浜唟stationList.Count}涓湴闈㈢珯");
+                },
+                (error) => { Debug.LogError($"鍔犺浇鍦伴潰绔欏け璐? {error}锛屼娇鐢ㄦā鎷熸暟鎹?); groundStations = Network.ApiClient.Instance.GetMockGroundStations(); stationsLoaded = true; }
+            ));
+
+            StartCoroutine(Network.ApiClient.Instance.GetTasks(
+                (taskList) =>
+                {
+                    tasks = taskList;
+                    tasksLoaded = true;
+                    Debug.Log($"鍔犺浇浜唟taskList.Count}涓换鍔?);
+                },
+                (error) => { Debug.LogError($"鍔犺浇浠诲姟澶辫触: {error}锛屼娇鐢ㄦā鎷熸暟鎹?); tasks = Network.ApiClient.Instance.GetMockTasks(); tasksLoaded = true; }
+            ));
+
+            // 绛夊緟鎵€鏈夋暟鎹姞杞藉畬鎴?            yield return new WaitUntil(() => satellitesLoaded && stationsLoaded && tasksLoaded);
+
+            isInitialized = true;
+            OnSimulationInitialized?.Invoke();
+            OnDataUpdated?.Invoke();
+            Debug.Log("浠跨湡鍒濆鍖栧畬鎴?);
+        }
+
+        [Header("缃戠粶璁剧疆")]
+        [SerializeField] private bool useBackend = true; // 鏄惁浣跨敤鍚庣API
+
+        /// <summary>
+        /// 寮€濮嬩豢鐪?        /// </summary>
+        public void StartSimulation()
+        {
+            if (!isInitialized)
+            {
+                Debug.LogWarning("浠跨湡鏈垵濮嬪寲锛屽厛璋冪敤Initialize()");
+                return;
+            }
+
+            if (isRunning) return;
+
+            Debug.Log("寮€濮嬩豢鐪?..");
+            isRunning = true;
+
+            // 鍒濆鍖栨ā鎷熷紑濮嬫椂闂?            simStartTime = DateTime.UtcNow;
+            simCurrentTime = simStartTime;
+            earthRotationAngle = 0.0;
+
+            // 濡傛灉浣跨敤鍚庣锛岄€氱煡鍚庣寮€濮嬩豢鐪?            if (useBackend && Network.ApiClient.Instance.IsConnected)
+            {
+                StartCoroutine(Network.ApiClient.Instance.StartSimulation(
+                    config.algorithm,
+                    config.maxTasks,
+                    speedFactor,
+                    (success) =>
+                    {
+                        if (success)
+                        {
+                            Debug.Log("鍚庣浠跨湡宸插惎鍔?);
+                        }
+                        else
+                        {
+                            useBackend = false;
+                            Debug.LogWarning("鍚庣浠跨湡鍚姩澶辫触锛岀户缁湰鍦颁豢鐪?);
+                        }
+                    }
+                ));
+            }
+            else
+            {
+                Debug.Log("浣跨敤鏈湴浠跨湡妯″紡");
+            }
+
+            // 鍚姩鏁版嵁鏇存柊鍗忕▼
+            if (updateCoroutine != null)
+                StopCoroutine(updateCoroutine);
+
+            updateCoroutine = StartCoroutine(UpdateSimulationData());
+
+            OnSimulationStarted?.Invoke();
+        }
+
+        /// <summary>
+        /// 鏆傚仠浠跨湡
+        /// </summary>
+        public void PauseSimulation()
+        {
+            if (!isRunning) return;
+
+            Debug.Log("鏆傚仠浠跨湡...");
+            isRunning = false;
+
+            // 濡傛灉浣跨敤鍚庣锛岄€氱煡鍚庣鏆傚仠浠跨湡
+            if (useBackend && Network.ApiClient.Instance.IsConnected)
+            {
+                StartCoroutine(Network.ApiClient.Instance.PauseSimulation(
+                    (success) =>
+                    {
+                        if (success)
+                        {
+                            Debug.Log("鍚庣浠跨湡宸叉殏鍋?);
+                        }
+                    }
+                ));
+            }
+
+            // 鍋滄鏁版嵁鏇存柊鍗忕▼
+            if (updateCoroutine != null)
+            {
+                StopCoroutine(updateCoroutine);
+                updateCoroutine = null;
+            }
+
+            OnSimulationPaused?.Invoke();
+        }
+
+        /// <summary>
+        /// 閲嶇疆浠跨湡
+        /// </summary>
+        public void ResetSimulation()
+        {
+            Debug.Log("閲嶇疆浠跨湡...");
+
+            // 鍋滄浠跨湡
+            if (isRunning)
+            {
+                PauseSimulation();
+            }
+
+            // 閲嶇疆鐘舵€?            simulationTime = 0f;
+            totalTasksProcessed = 0;
+            tasksCompleted = 0;
+            tasksFailed = 0;
+            averageProcessingTime = 0f;
+
+            // 閲嶆柊鍔犺浇鏁版嵁
+            if (isInitialized)
+            {
+                LoadInitialData();
+            }
+
+            OnSimulationReset?.Invoke();
+        }
+
+        /// <summary>
+        /// 璁剧疆璋冨害绠楁硶
+        /// </summary>
+        public void SetAlgorithm(string algorithm)
+        {
+            if (config.algorithm == algorithm) return;
+
+            config.algorithm = algorithm;
+            Debug.Log($"鍒囨崲璋冨害绠楁硶: {algorithm}");
+
+            // 閫氱煡鍚庣
+            if (isRunning && useBackend && Network.ApiClient.Instance.IsConnected)
+            {
+                StartCoroutine(Network.ApiClient.Instance.SetAlgorithm(algorithm,
+                    (success) =>
+                    {
+                        if (success)
+                        {
+                            Debug.Log($"鍚庣绠楁硶宸插垏鎹负: {algorithm}");
+                        }
+                    }
+                ));
+            }
+
+            OnAlgorithmChanged?.Invoke(algorithm);
+        }
+
+        /// <summary>
+        /// 璁剧疆鏃堕棿缂╂斁
+        /// </summary>
+        public void SetTimeScale(float timeScale)
+        {
+            // Backward-compatible wrapper: timeScale now maps to speedFactor.
+            SetSpeedFactor(timeScale);
+            config.timeScale = speedFactor;
+            Debug.Log($"Time scale set to: {config.timeScale} (mapped to speed_factor)");
+        }
+
+        /// <summary>
+        /// 璁剧疆鏃堕棿鍔犻€熷洜瀛?        /// </summary>
+        public void SetSpeedFactor(float factor)
+        {
+            speedFactor = Mathf.Clamp(factor, 1f, 3600f);
+            Debug.Log($"鏃堕棿鍔犻€熷洜瀛愯缃负: {speedFactor}x");
+
+            // 閫氱煡鍚庣
+            if (useBackend && Network.ApiClient.Instance.IsConnected)
+            {
+                StartCoroutine(Network.ApiClient.Instance.SetSpeedFactor(speedFactor,
+                    (newFactor) =>
+                    {
+                        speedFactor = newFactor;
+                        Debug.Log($"鍚庣閫熷害鍥犲瓙宸茶缃负: {newFactor}x");
+                    },
+                    (error) => Debug.LogWarning($"璁剧疆鍚庣閫熷害鍥犲瓙澶辫触: {error}")
+                ));
+            }
+
+            OnSpeedFactorChanged?.Invoke(speedFactor);
+        }
+
+        /// <summary>
+        /// 鏇存柊浠跨湡鏁版嵁锛堝畾鏈熻皟鐢級
+        /// </summary>
+        private IEnumerator UpdateSimulationData()
+        {
+            while (isRunning)
+            {
+                yield return new WaitForSeconds(updateInterval);
+
+                // 鏇存柊浠跨湡鏃堕棿
+                simulationTime += updateInterval * speedFactor;
+
+                if (!useBackend || !Network.ApiClient.Instance.IsConnected)
+                {
+                    // 鏈湴妯″紡锛氬熀浜?speed_factor 鏇存柊妯℃嫙鏃堕棿
+                    UpdateLocalSimTime();
+                    UpdateStatistics(tasks);
+                    OnDataUpdated?.Invoke();
+                    continue;
+                }
+
+                // 浠庡悗绔幏鍙栨椂闂翠俊鎭?                StartCoroutine(Network.ApiClient.Instance.GetSimulationTime(
+                    (timeInfo) => {
+                        if (timeInfo != null)
+                        {
+                            earthRotationAngle = timeInfo.earth_rotation_angle_rad;
+                            if (DateTime.TryParse(timeInfo.sim_time, out DateTime parsedTime))
+                            {
+                                simCurrentTime = parsedTime;
+                            }
+                            OnEarthRotationUpdated?.Invoke(earthRotationAngle);
+                        }
+                    },
+                    (error) => Debug.LogWarning($"鑾峰彇鏃堕棿淇℃伅澶辫触: {error}")
+                ));
+
+                // 浠庡悗绔幏鍙栨渶鏂版暟鎹?                StartCoroutine(Network.ApiClient.Instance.GetSatellites(
+                    (satelliteList) => {
+                        satellites = satelliteList;
+                        Debug.Log($"[SimulationManager] GetSatellites鍥炶皟: 鑾峰彇鍒?{satelliteList.Count} 棰楀崼鏄?);
+                        OnDataUpdated?.Invoke();
+                        Debug.Log($"[SimulationManager] OnDataUpdated浜嬩欢宸茶Е鍙?);
+                    },
+                    (error) =>
+                    {
+                        useBackend = false;
+                        Debug.LogWarning($"鏇存柊鍗槦鏁版嵁澶辫触: {error}");
+                    }
+                ));
+
+                StartCoroutine(Network.ApiClient.Instance.GetTasks(
+                    (taskList) => {
+                        tasks = taskList;
+                        Debug.Log($"[SimulationManager] GetTasks鍥炶皟: 鑾峰彇鍒?{taskList.Count} 涓换鍔?);
+                        // 鏇存柊缁熻淇℃伅
+                        UpdateStatistics(taskList);
+                        OnDataUpdated?.Invoke();
+                        Debug.Log($"[SimulationManager] OnDataUpdated浜嬩欢宸茶Е鍙?);
+                    },
+                    (error) =>
+                    {
+                        useBackend = false;
+                        Debug.LogWarning($"鏇存柊浠诲姟鏁版嵁澶辫触: {error}");
+                    }
+                ));
+            }
+        }
+
+        /// <summary>
+        /// 鏈湴妯″紡鏇存柊妯℃嫙鏃堕棿
+        /// </summary>
+        private void UpdateLocalSimTime()
+        {
+            // Earth angular velocity: 7.292115e-5 rad/s
+            const double EarthAngularVelocity = 7.292115e-5;
+
+            // Update earth rotation angle based on speed factor
+            double deltaSeconds = updateInterval * speedFactor;
+            earthRotationAngle += deltaSeconds * EarthAngularVelocity;
+
+            // Normalize angle to [0, 2蟺)
+            earthRotationAngle = earthRotationAngle % (2.0 * Math.PI);
+            if (earthRotationAngle < 0) earthRotationAngle += 2.0 * Math.PI;
+
+            // Update sim current time
+            if (simStartTime.HasValue)
+            {
+                simCurrentTime = simStartTime.Value.AddSeconds(simulationTime);
+            }
+
+            OnEarthRotationUpdated?.Invoke(earthRotationAngle);
+        }
+
+        /// <summary>
+        /// 鏇存柊缁熻淇℃伅
+        /// </summary>
+        private void UpdateStatistics(List<Task> currentTasks)
+        {
+            int completed = 0;
+            int failed = 0;
+            float totalProcessingTime = 0f;
+
+            foreach (var task in currentTasks)
+            {
+                if (task.status == "completed")
+                {
+                    completed++;
+                    // 杩欓噷鍙互娣诲姞澶勭悊鏃堕棿璁＄畻
+                }
+                else if (task.status == "failed")
+                {
+                    failed++;
+                }
+            }
+
+            tasksCompleted = completed;
+            tasksFailed = failed;
+            totalTasksProcessed = completed + failed;
+
+            if (completed > 0)
+            {
+                // 绠€鍖栬绠楀钩鍧囧鐞嗘椂闂?                averageProcessingTime = simulationTime / completed;
+            }
+        }
+
+        /// <summary>
+        /// 鏌ユ壘鍗槦
+        /// </summary>
+        public Satellite FindSatellite(int id)
+        {
+            return satellites.Find(s => s.id == id);
+        }
+
+        /// <summary>
+        /// 鏌ユ壘鍦伴潰绔?        /// </summary>
+        public GroundStation FindGroundStation(int id)
+        {
+            return groundStations.Find(g => g.id == id);
+        }
+
+        /// <summary>
+        /// 鏌ユ壘浠诲姟
+        /// </summary>
+        public Task FindTask(int id)
+        {
+            return tasks.Find(t => t.id == id);
+        }
+
+        void Start()
+        {
+            // 鑷姩鍒濆鍖?            Initialize();
+        }
+
+        void OnDestroy()
+        {
+            if (updateCoroutine != null)
+            {
+                StopCoroutine(updateCoroutine);
+            }
+        }
+
+        /// <summary>
+        /// 鍒锋柊浠诲姟鏁版嵁
+        /// </summary>
+        public void RefreshTasks()
+        {
+            if (!useBackend || !Network.ApiClient.Instance.IsConnected)
+            {
+                UpdateStatistics(tasks);
+                OnDataUpdated?.Invoke();
+                return;
+            }
+
+            StartCoroutine(Network.ApiClient.Instance.GetTasks(
+                (taskList) =>
+                {
+                    tasks = taskList;
+                    Debug.Log($"鍒锋柊浜唟taskList.Count}涓换鍔?);
+                    OnDataUpdated?.Invoke();
+                },
+                (error) => Debug.LogError($"鍒锋柊浠诲姟澶辫触: {error}")
+            ));
+        }
+
+        public void SetBackendEnabled(bool enabled)
+        {
+            useBackend = enabled;
+        }
+
+        private void LoadMockData()
+        {
+            satellites = Network.ApiClient.Instance.GetMockSatellites();
+            groundStations = Network.ApiClient.Instance.GetMockGroundStations();
+            tasks = Network.ApiClient.Instance.GetMockTasks();
+            UpdateStatistics(tasks);
+
+            isInitialized = true;
+            OnSimulationInitialized?.Invoke();
+            OnDataUpdated?.Invoke();
+        }
+    }
+}
+

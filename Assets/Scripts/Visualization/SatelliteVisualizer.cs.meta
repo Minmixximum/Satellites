@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: CSwbsSmrWn+tq5fNV5Masz9UKPRCeYs77qNWIhTFoCYaSw+yvjMqS4w=
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - satellitePrefab: {fileID: 919132149155446097, guid: 7e853b89609fe9a428b61d5fad67d620, type: 3}
+  - labelPrefab: {instanceID: 0}
+  - labelFont: {instanceID: 0}
+  - statusIndicatorPrefab: {instanceID: 0}
+  - orbitMaterial: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
