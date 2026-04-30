@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover
 
 
 class TaskScheduler:
-    """浠诲姟璋冨害鍣?- 鍗忚皟璋冨害绠楁硶鎵ц"""
+    """任务调度器 - 协调调度算法执行"""
 
     def __init__(self, visibility_analyzer=None):
         self.visibility_analyzer = visibility_analyzer
@@ -44,7 +44,7 @@ class TaskScheduler:
         self.results_history: List[ScheduleResult] = []
 
     def get_available_algorithms(self) -> List[Dict]:
-        """鑾峰彇鍙敤绠楁硶鍒楄〃"""
+        """获取可用算法列表"""
         return [
             {
                 "id": key,
@@ -55,14 +55,14 @@ class TaskScheduler:
         ]
 
     def _get_algorithm_description(self, alg_id: str) -> str:
-        """鑾峰彇绠楁硶鎻忚堪"""
+        """获取算法描述"""
         descriptions = {
-            "fcfs": "鍏堟潵鍏堟湇鍔?(First-Come, First-Served) - 绠€鍗曞叕骞崇殑璋冨害绛栫暐",
-            "sjf": "鏈€鐭綔涓氫紭鍏?(Shortest Job First) - 鏈€灏忓寲骞冲潎绛夊緟鏃堕棿",
-            "edd": "鏈€鏃╂埅姝㈡湡浼樺厛 (Earliest Due Date) - 鏈€灏忓寲浠诲姟瓒呮椂",
-            "max_visibility": "鏈€澶у彲瑙佹€т紭鍏?- optimize scheduling by visibility windows",
+            "fcfs": "先来先服务 (First-Come, First-Served) - 简单公平的调度策略",
+            "sjf": "最短作业优先 (Shortest Job First) - 最小化平均等待时间",
+            "edd": "最早截止期优先 (Earliest Due Date) - 最小化任务超时",
+            "max_visibility": "最大可见性优先 - 基于可见窗口优化调度",
         }
-        return descriptions.get(alg_id, "鏈煡绠楁硶")
+        return descriptions.get(alg_id, "未知算法")
 
     def run_scheduling(self, algorithm: str, tasks: List[Task],
                       satellites: List[Satellite],
@@ -70,15 +70,17 @@ class TaskScheduler:
                       time_start: Optional[datetime] = None,
                       time_end: Optional[datetime] = None) -> Optional[ScheduleResult]:
         """
-        鎵ц璋冨害
+        执行调度
 
         Args:
-            algorithm: 绠楁硶ID
-            tasks: 浠诲姟鍒楄〃
-            satellites: 鍗槦鍒楄〃
-            ground_stations: 鍦伴潰绔欏垪琛?            time_start: 寮€濮嬫椂闂达紙榛樿褰撳墠鏃堕棿锛?            time_end: 缁撴潫鏃堕棿锛堥粯璁ゅ紑濮?24灏忔椂锛?
+            algorithm: 算法 ID
+            tasks: 任务列表
+            satellites: 卫星列表
+            ground_stations: 地面站列表
+            time_start: 开始时间（默认当前时间）
+            time_end: 结束时间（默认开始后 24 小时）
         Returns:
-            璋冨害缁撴灉
+            调度结果
         """
         if algorithm not in self.algorithms:
             return None
@@ -94,7 +96,7 @@ class TaskScheduler:
         else:
             time_end = ensure_utc(time_end)
 
-        # 鎵ц璋冨害
+        # 执行调度
         result = scheduler.schedule(
             tasks=tasks,
             satellites=satellites,
@@ -115,10 +117,10 @@ class TaskScheduler:
                           time_start: Optional[datetime] = None,
                           time_end: Optional[datetime] = None) -> Dict:
         """
-        姣旇緝鎵€鏈夌畻娉曠殑鎬ц兘
+        比较所有算法的性能
 
         Returns:
-            绠楁硶瀵规瘮缁撴灉
+            算法对比结果
         """
         if time_start is None:
             time_start = utc_now()
@@ -142,7 +144,8 @@ class TaskScheduler:
         }
 
         for alg_id, scheduler in self.algorithms.items():
-            # 澶嶅埗浠诲姟浠ラ伩鍏嶇姸鎬佹薄鏌?            import copy
+            # 复制任务，避免状态污染
+            import copy
             tasks_copy = copy.deepcopy(tasks)
 
             result = scheduler.schedule(
@@ -174,12 +177,13 @@ class TaskScheduler:
                 }
             })
 
-        # 鎵惧嚭鍚勯」鎸囨爣鐨勬渶浣崇畻娉?        comparison["best_algorithms"] = self._find_best_algorithms(comparison["results"])
+        # 找出各项指标的最佳算法
+        comparison["best_algorithms"] = self._find_best_algorithms(comparison["results"])
 
         return comparison
 
     def _find_best_algorithms(self, results: List[Dict]) -> Dict:
-        """鎵惧嚭鍚勯」鎸囨爣鐨勬渶浣崇畻娉?"""
+        """找出各项指标的最佳算法"""
         best = {}
 
         metrics = [
@@ -192,10 +196,10 @@ class TaskScheduler:
 
         for metric in metrics:
             if metric.startswith("avg_") and metric != "avg_delay":
-                # 鏃堕棿鎸囨爣瓒婂皬瓒婂ソ
+                # 时间类指标越小越好
                 best_result = min(results, key=lambda r: r["metrics"][metric])
             else:
-                # 姣旂巼鎸囨爣瓒婂ぇ瓒婂ソ
+                # 比率类指标越大越好
                 best_result = max(results, key=lambda r: r["metrics"][metric])
 
             best[metric] = {
@@ -206,21 +210,21 @@ class TaskScheduler:
         return best
 
     def get_last_result(self) -> Optional[ScheduleResult]:
-        """鑾峰彇鏈€鍚庝竴娆¤皟搴︾粨鏋?"""
+        """获取最后一次调度结果"""
         return self.last_result
 
     def get_results_history(self) -> List[ScheduleResult]:
-        """鑾峰彇鍘嗗彶璋冨害缁撴灉"""
+        """获取历史调度结果"""
         return self.results_history
 
     def clear_history(self):
-        """娓呴櫎鍘嗗彶璁板綍"""
+        """清除历史记录"""
         self.results_history = []
         self.last_result = None
 
 
 class SimulationEngine:
-    """浠跨湡寮曟搸 - 绠＄悊浠跨湡鐘舵€佸拰鎵ц"""
+    """仿真引擎 - 管理仿真状态和执行"""
 
     # Earth rotation angular velocity (rad/s) - 360 degrees per sidereal day
     EARTH_ANGULAR_VELOCITY = 7.292115e-5
@@ -232,24 +236,25 @@ class SimulationEngine:
         self.orbit_calc = orbit_calculator
         self.visibility_analyzer = visibility_analyzer
 
-        # 浠跨湡鐘舵€?        self.is_running = False
+        # 仿真状态
+        self.is_running = False
         self.is_paused = False
         self.current_time: Optional[datetime] = None
         self.start_time: Optional[datetime] = None
         self.end_time: Optional[datetime] = None
-        self.time_speed = 1.0  # 鏃堕棿娴侀€熷€嶆暟
+        self.time_speed = 1.0  # 时间流速倍数
 
         # Time acceleration
         self.sim_time: Optional[datetime] = None  # Simulated time (single source of truth)
-        self.speed_factor: float = 60.0  # Default: 1 real second = 60 simulated seconds
+        self.speed_factor: float = 1200.0  # Default: 1 real second = 1200 simulated seconds
 
-        # 浠跨湡鏁版嵁
+        # 仿真数据
         self.satellites: Dict[str, Satellite] = {}
         self.ground_stations: Dict[str, GroundStation] = {}
         self.tasks: Dict[str, Task] = {}
         self.active_algorithm = "fcfs"
 
-        # 缁缁熻淇℃伅
+        # 统计信息
         self.stats = {
             "total_tasks_generated": 0,
             "total_tasks_completed": 0,
@@ -260,16 +265,16 @@ class SimulationEngine:
         # 后台仿真线程
         self._simulation_thread = None
         self._stop_thread = False
-        self._thread_interval = 1.0  # 秒
+        self._thread_interval = 0.2  # 秒
 
     def initialize(self, satellites: List[Satellite],
                   ground_stations: List[GroundStation],
                   start_time: Optional[datetime] = None):
-        """鍒濆鍖栦豢鐪熺幆澧?"""
+        """初始化仿真环境"""
         self.satellites = {s.id: s for s in satellites}
         self.ground_stations = {gs.id: gs for gs in ground_stations}
 
-        # 娣诲姞鍗槦鍒拌建閬撹绠楀櫒
+        # 添加卫星到轨道计算器
         if self.orbit_calc:
             for sat in satellites:
                 self.orbit_calc.add_satellite(sat.id, sat.tle_line1, sat.tle_line2)
@@ -285,7 +290,7 @@ class SimulationEngine:
         self.stats["simulation_duration"] = 0.0
 
     def start(self, algorithm: str = "fcfs"):
-        """寮€濮嬩豢鐪?"""
+        """开始仿真"""
         self.active_algorithm = algorithm
         self.is_running = True
         self.is_paused = False
@@ -294,15 +299,15 @@ class SimulationEngine:
         self._start_simulation_thread()
 
     def pause(self):
-        """鏆傚仠浠跨湡"""
+        """暂停仿真"""
         self.is_paused = True
 
     def resume(self):
-        """鎭㈠浠跨湡"""
+        """恢复仿真"""
         self.is_paused = False
 
     def stop(self):
-        """鍋滄浠跨湡"""
+        """停止仿真"""
         self.is_running = False
         self.is_paused = False
         self._stop_simulation_thread()
@@ -339,14 +344,15 @@ class SimulationEngine:
 
     def step(self, delta_seconds: float = 60.0):
         """
-        鎵ц涓€涓豢鐪熸
+        执行一个仿真步进
 
         Args:
-            delta_seconds: 鏃堕棿姝ラ暱锛堢锛?        """
+            delta_seconds: 时间步长（秒）
+        """
         if not self.is_running or self.is_paused:
             return
 
-        # 鏇存柊浠跨湡鏃堕棿
+        # 更新仿真时间
         if self.current_time is None:
             self.current_time = self.start_time or utc_now()
         if self.sim_time is None:
@@ -359,15 +365,17 @@ class SimulationEngine:
         self.current_time = self.sim_time  # Keep current_time in sync with sim_time
         self.stats["simulation_duration"] += sim_delta
 
-        # 鏇存柊鍗槦浣嶇疆
+        # 更新卫星位置
         self._update_satellite_positions()
 
-        # 妫€鏌ュ彲瑙佹€?        self._update_visibility()
+        # 检查可见性
+        self._update_visibility()
 
-        # 妫€鏌ヤ换鍔＄姸鎬?        self._update_task_status()
+        # 检查任务状态
+        self._update_task_status()
 
     def _update_satellite_positions(self):
-        """鏇存柊鎵€鏈夊崼鏄熶綅缃?"""
+        """更新所有卫星位置"""
         if not self.orbit_calc:
             return
 
@@ -379,7 +387,7 @@ class SimulationEngine:
                 sat.update_position(pos["lat"], pos["lon"], pos["alt"])
 
     def _update_visibility(self):
-        """鏇存柊鍙鎬х姸鎬?"""
+        """更新可见性状态"""
         for sat in self.satellites.values():
             sat.is_visible = False
 
@@ -396,32 +404,34 @@ class SimulationEngine:
                     gs.connected_satellites.append(sat.id)
 
     def _update_task_status(self):
-        """鏇存柊浠诲姟鐘舵€?"""
+        """更新任务状态"""
         for task in self.tasks.values():
             if task.status == TaskStatus.PENDING:
-                # 妫€鏌ユ槸鍚﹁秴鏃?                if task.is_expired(self.current_time):
+                # 检查是否超时
+                if task.is_expired(self.current_time):
                     task.status = TaskStatus.TIMEOUT
                     self.stats["total_tasks_failed"] += 1
 
             elif task.status == TaskStatus.RUNNING:
-                # 妫€鏌ユ槸鍚﹀畬鎴?                if task.actual_end and self.current_time >= task.actual_end:
+                # 检查是否完成
+                if task.actual_end and self.current_time >= task.actual_end:
                     task.complete(self.current_time)
                     self.stats["total_tasks_completed"] += 1
 
-                    # 鏇存柊鍗槦缁熻
+                    # 更新卫星统计
                     if task.assigned_satellite in self.satellites:
                         sat = self.satellites[task.assigned_satellite]
                         sat.completed_tasks += 1
                         sat.remove_task(task.id)
 
     def add_task(self, task: Task) -> bool:
-        """娣诲姞浠诲姟"""
+        """添加任务"""
         self.tasks[task.id] = task
         self.stats["total_tasks_generated"] += 1
         return True
 
     def remove_task(self, task_id: str) -> bool:
-        """绉婚櫎浠诲姟"""
+        """移除任务"""
         if task_id in self.tasks:
             del self.tasks[task_id]
             return True
@@ -435,7 +445,7 @@ class SimulationEngine:
         self.stats["total_tasks_failed"] = 0
 
     def run_scheduling(self) -> Optional[ScheduleResult]:
-        """鎵ц璋冨害"""
+        """执行调度"""
         if not self.is_running:
             return None
 
@@ -454,7 +464,7 @@ class SimulationEngine:
             time_end=self.current_time + timedelta(hours=1)
         )
 
-        # 搴旂敤璋冨害缁撴灉
+        # 应用调度结果
         if result:
             for task in result.tasks:
                 if task.id in self.tasks:
@@ -463,7 +473,7 @@ class SimulationEngine:
         return result
 
     def get_status(self) -> Dict:
-        """鑾峰彇浠跨湡鐘舵€?"""
+        """获取仿真状态"""
         return {
             "is_running": self.is_running,
             "is_paused": self.is_paused,

@@ -29,16 +29,16 @@ def start_simulation():
     Request body examples:
         {
             "algorithm": "fcfs",
-            "speed_factor": 60.0
+            "speed_factor": 1200.0
         }
         {
             "algorithm": "fcfs",
-            "timeScale": 1.0
+            "timeScale": 1200.0
         }
         {
             "algorithm": "fcfs",
-            "time_scale": 1.0,
-            "time_speed": 1.0
+            "time_scale": 1200.0,
+            "time_speed": 1200.0
         }
     """
     data = request.get_json() or {}
@@ -59,7 +59,7 @@ def start_simulation():
     if speed_factor is None:
         speed_factor = data.get("time_speed")
     if speed_factor is None:
-        speed_factor = getattr(engine, "speed_factor", 60.0)
+        speed_factor = getattr(engine, "speed_factor", 1200.0)
 
     engine.active_algorithm = algorithm
     # Keep this field for compatibility but neutralize its effect.
@@ -292,7 +292,7 @@ def set_simulation_speed():
     Set time acceleration speed factor.
     Request body:
         {
-            "speed_factor": 60.0
+            "speed_factor": 1200.0
         }
     """
     data = request.get_json() or {}
@@ -301,7 +301,7 @@ def set_simulation_speed():
     if not engine:
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
-    speed_factor = data.get("speed_factor", 60.0)
+    speed_factor = data.get("speed_factor", 1200.0)
 
     result = engine.set_speed_factor(speed_factor)
 
