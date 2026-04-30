@@ -11,7 +11,7 @@ namespace SatelliteEdgeComputing.Visualization
     {
         [Header("地面站设置")]
         [SerializeField] private GameObject groundStationPrefab;
-        [SerializeField] private float stationScale = 20000f;
+        [SerializeField] private float stationScale = 200000f;
         [SerializeField] private bool showCoverageArea = true;
         [SerializeField] private bool showLabels = true;
         [SerializeField] private Color mainStationColor = Color.green;
@@ -445,7 +445,9 @@ namespace SatelliteEdgeComputing.Visualization
                 if (instance.label != null && instance.labelRect != null)
                 {
                     // 将世界坐标转换为屏幕坐标
-                    Vector3 screenPos = cam.WorldToScreenPoint(instance.worldPosition);
+                    Vector3 screenPos = cam.WorldToScreenPoint(
+                        instance.gameObject != null ? instance.gameObject.transform.position : instance.worldPosition
+                    );
 
                     // 检查是否在相机前方且在屏幕内
                     if (screenPos.z > 0 && screenPos.x >= 0 && screenPos.x <= Screen.width &&

@@ -11,6 +11,9 @@ namespace SatelliteEdgeComputing.Core
     public class SimulationManager : MonoBehaviour
     {
         private static SimulationManager _instance;
+        private const float DefaultUpdateInterval = 0.2f;
+        private const float DefaultSpeedFactor = 1200.0f;
+        private const int DefaultTargetFrameRate = 90;
         public static SimulationManager Instance
         {
             get
@@ -25,15 +28,30 @@ namespace SatelliteEdgeComputing.Core
             }
         }
 
+        void Awake()
+        {
+            if (_instance != null && _instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            _instance = this;
+            DontDestroyOnLoad(gameObject);
+            updateInterval = DefaultUpdateInterval;
+            speedFactor = DefaultSpeedFactor;
+            Application.targetFrameRate = DefaultTargetFrameRate;
+        }
+
         [Header("仿真状态")]
         [SerializeField] private bool isInitialized = false;
         [SerializeField] private bool isRunning = false;
         [SerializeField] private float simulationTime = 0f;
-        [SerializeField] private float updateInterval = 1.0f; // 数据更新间隔（秒）
+        [SerializeField] private float updateInterval = DefaultUpdateInterval; // 数据更新间隔（秒）
         [SerializeField] private SimulationConfig config = new SimulationConfig();
 
         [Header("时间加速")]
-        [SerializeField] private float speedFactor = 60.0f; // 默认60倍速
+        [SerializeField] private float speedFactor = DefaultSpeedFactor; // 默认1200倍速
         [SerializeField] private double earthRotationAngle = 0.0; // 地球旋转角度（弧度）
         private DateTime? simStartTime = null; // 模拟开始时间
         private DateTime? simCurrentTime = null; // 当前模拟时间
@@ -100,7 +118,7 @@ namespace SatelliteEdgeComputing.Core
             config = new SimulationConfig
             {
                 algorithm = "fcfs",
-                timeScale = 1.0f,
+                timeScale = DefaultSpeedFactor,
                 maxTasks = 100,
                 showOrbits = true,
                 showLinks = true
@@ -345,7 +363,7 @@ namespace SatelliteEdgeComputing.Core
         /// </summary>
         public void SetSpeedFactor(float factor)
         {
-            speedFactor = Mathf.Clamp(factor, 1f, 3600f);
+            speedFactor = Mathf.Clamp(factor, DefaultSpeedFactor, 3600f);
             Debug.Log($"时间加速因子设置为: {speedFactor}x");
 
             // 通知后端
@@ -354,7 +372,7 @@ namespace SatelliteEdgeComputing.Core
                 StartCoroutine(Network.ApiClient.Instance.SetSpeedFactor(speedFactor,
                     (newFactor) =>
                     {
-                        speedFactor = newFactor;
+                        speedFactor = Mathf.Clamp(newFactor, DefaultSpeedFactor, 3600f);
                         Debug.Log($"后端速度因子已设置为: {newFactor}x");
                     },
                     (error) => Debug.LogWarning($"设置后端速度因子失败: {error}")

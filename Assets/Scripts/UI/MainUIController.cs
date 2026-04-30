@@ -139,9 +139,9 @@ namespace SatelliteEdgeComputing.UI
             // 初始化时间滑块
             if (timeScaleSlider != null)
             {
-                timeScaleSlider.minValue = 1f;
+                timeScaleSlider.minValue = 1200f;
                 timeScaleSlider.maxValue = 3600f;
-                timeScaleSlider.value = simulationManager != null ? simulationManager.SpeedFactor : 60f;
+                timeScaleSlider.SetValueWithoutNotify(simulationManager != null ? simulationManager.SpeedFactor : 1200f);
             }
 
             isInitialized = true;
@@ -169,7 +169,7 @@ namespace SatelliteEdgeComputing.UI
                 timeScaleSlider.onValueChanged.AddListener(OnTimeScaleChanged);
 
             if (timeScaleValueText != null)
-                timeScaleValueText.text = $"x{(simulationManager != null ? simulationManager.SpeedFactor : 60f):F1}";
+                timeScaleValueText.text = $"x{(simulationManager != null ? simulationManager.SpeedFactor : 1200f):F1}";
 
             if (showOrbitsToggle != null)
                 showOrbitsToggle.onValueChanged.AddListener(OnShowOrbitsChanged);
@@ -537,6 +537,7 @@ namespace SatelliteEdgeComputing.UI
 
         private void OnTimeScaleChanged(float value)
         {
+            value = Mathf.Max(1200f, value);
             simulationManager.SetSpeedFactor(value);
             if (timeScaleValueText != null)
             {

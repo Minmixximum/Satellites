@@ -88,7 +88,7 @@ namespace SatelliteEdgeComputing.Core
     public class SimulationConfig
     {
         public string algorithm= "fcfs";    // 调度算法：fcfs, sjf, edd, max_visibility
-        public float timeScale = 1.0f; // 时间缩放因子
+        public float timeScale = 1200.0f; // 时间缩放因子
         public int maxTasks = 10;  // 最大任务数
         public bool showOrbits = true; // 显示轨道
         public bool showLinks = true; // 显示通信链路

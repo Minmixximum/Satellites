@@ -222,7 +222,7 @@ namespace SatelliteEdgeComputing.Network
         /// <summary>
         /// 启动仿真
         /// </summary>
-        public IEnumerator StartSimulation(string algorithm = "fcfs", int maxTasks = 100, float speedFactor = 60.0f,
+        public IEnumerator StartSimulation(string algorithm = "fcfs", int maxTasks = 100, float speedFactor = 1200.0f,
             Action<bool> callback = null, Action<string> errorCallback = null)
         {
             string url = $"{apiBaseUrl}/simulation/start";

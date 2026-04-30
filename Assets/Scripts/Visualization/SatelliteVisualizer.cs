@@ -11,7 +11,7 @@ namespace SatelliteEdgeComputing.Visualization
     {
         [Header("卫星设置")]
         [SerializeField] private GameObject satellitePrefab;
-        [SerializeField] private float satelliteScale = 10000f;
+        [SerializeField] private float satelliteScale = 50000f;
         [SerializeField] private bool showLabels = true;
         [SerializeField] private bool showStatusIndicators = true;
         [SerializeField] private Color idleColor = Color.green;
@@ -56,19 +56,30 @@ namespace SatelliteEdgeComputing.Visualization
             public LineRenderer orbitLine;
             public List<Vector3> orbitPoints = new List<Vector3>();
             public Vector3 worldPosition;
+            public Vector3 interpolationStartPosition;
+            public float interpolationStartTime;
+            public bool hasPosition;
 
             public void UpdateVisualization(EarthRenderer earthRenderer, float scale,
                 Color idleColor, Color busyColor, Color overloadedColor)
             {
                 if (gameObject == null || earthRenderer == null) return;
 
-                // 更新位置
-                worldPosition = data.GetWorldPosition(earthRenderer.GetEarthRadius());
-                gameObject.transform.position = worldPosition;
-
-                // 朝向地球中心
-                gameObject.transform.LookAt(Vector3.zero);
-                gameObject.transform.Rotate(90, 0, 0); // 调整方向
+                Vector3 nextPosition = data.GetWorldPosition(earthRenderer.GetEarthRadius());
+                if (!hasPosition)
+                {
+                    worldPosition = nextPosition;
+                    interpolationStartPosition = nextPosition;
+                    interpolationStartTime = Time.time;
+                    gameObject.transform.position = nextPosition;
+                    hasPosition = true;
+                }
+                else if (nextPosition != worldPosition)
+                {
+                    interpolationStartPosition = gameObject.transform.position;
+                    interpolationStartTime = Time.time;
+                    worldPosition = nextPosition;
+                }
 
                 // 更新颜色
                 if (renderer != null)
@@ -499,18 +510,35 @@ namespace SatelliteEdgeComputing.Visualization
         void Update()
         {
             // 确保相机存在
-            if (Camera.main == null || canvasTransform == null) return;
+            if (Camera.main == null) return;
 
             Camera cam = Camera.main;
             RectTransform canvasRect = canvasTransform as RectTransform;
+            const float interpolationDuration = 0.2f;
 
             // 更新标签位置（将世界坐标转换为屏幕坐标）
             foreach (var instance in satelliteInstances.Values)
             {
-                if (instance.label != null && instance.labelRect != null)
+                if (instance.gameObject != null)
+                {
+                    float moveT = Mathf.Clamp01((Time.time - instance.interpolationStartTime) / interpolationDuration);
+                    instance.gameObject.transform.position = Vector3.Lerp(
+                        instance.interpolationStartPosition,
+                        instance.worldPosition,
+                        moveT
+                    );
+                    instance.gameObject.transform.LookAt(Vector3.zero);
+                    instance.gameObject.transform.Rotate(90, 0, 0);
+                }
+
+                Vector3 currentPosition = instance.gameObject != null
+                    ? instance.gameObject.transform.position
+                    : instance.worldPosition;
+
+                if (canvasRect != null && instance.label != null && instance.labelRect != null)
                 {
                     // 将世界坐标转换为屏幕坐标
-                    Vector3 screenPos = cam.WorldToScreenPoint(instance.worldPosition);
+                    Vector3 screenPos = cam.WorldToScreenPoint(currentPosition);
 
                     // 检查是否在相机前方（z > 0）
                     if (screenPos.z > 0 && screenPos.x >= 0 && screenPos.x <= Screen.width &&
@@ -533,9 +561,9 @@ namespace SatelliteEdgeComputing.Visualization
                     }
                 }
 
-                if (instance.statusIndicator != null)
+                if (canvasRect != null && instance.statusIndicator != null)
                 {
-                    Vector3 screenPos = cam.WorldToScreenPoint(instance.worldPosition);
+                    Vector3 screenPos = cam.WorldToScreenPoint(currentPosition);
                     if (screenPos.z > 0 && screenPos.x >= 0 && screenPos.x <= Screen.width &&
                         screenPos.y >= 0 && screenPos.y <= Screen.height)
                     {
