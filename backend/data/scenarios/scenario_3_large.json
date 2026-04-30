@@ -1,0 +1,62 @@
+{
+  "name": "大规模测试场景",
+  "description": "30颗卫星，5个地面站的大规模测试场景",
+  "satellites_count": 30,
+  "ground_stations_count": 5,
+  "note": "此场景使用动态生成的卫星数据，请参考API /api/simulation/batch_tasks 生成测试任务",
+  "ground_stations": [
+    {
+      "id": "gs_001",
+      "name": "Ground Station Beijing",
+      "latitude": 39.9042,
+      "longitude": 116.4074,
+      "altitude": 0.044,
+      "min_elevation": 10,
+      "max_range": 3000
+    },
+    {
+      "id": "gs_002",
+      "name": "Ground Station New York",
+      "latitude": 40.7128,
+      "longitude": -74.0060,
+      "altitude": 0.010,
+      "min_elevation": 10,
+      "max_range": 3000
+    },
+    {
+      "id": "gs_003",
+      "name": "Ground Station London",
+      "latitude": 51.5074,
+      "longitude": -0.1278,
+      "altitude": 0.011,
+      "min_elevation": 10,
+      "max_range": 3000
+    },
+    {
+      "id": "gs_004",
+      "name": "Ground Station Sydney",
+      "latitude": -33.8688,
+      "longitude": 151.2093,
+      "altitude": 0.003,
+      "min_elevation": 10,
+      "max_range": 3000
+    },
+    {
+      "id": "gs_005",
+      "name": "Ground Station Tokyo",
+      "latitude": 35.6762,
+      "longitude": 139.6503,
+      "altitude": 0.040,
+      "min_elevation": 10,
+      "max_range": 3000
+    }
+  ],
+  "configuration": {
+    "orbital_planes": 3,
+    "satellites_per_plane": 10,
+    "inclination": 53.0,
+    "altitude_range": [540, 560],
+    "capacity_range": [800, 1500],
+    "storage_range": [500, 1000]
+  }
+}
