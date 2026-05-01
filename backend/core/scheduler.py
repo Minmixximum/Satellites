@@ -228,6 +228,7 @@ class SimulationEngine:
 
     # Earth rotation angular velocity (rad/s) - 360 degrees per sidereal day
     EARTH_ANGULAR_VELOCITY = 7.292115e-5
+    MIN_PROCESSING_SECONDS = 300.0
 
     def __init__(self, scheduler: TaskScheduler,
                  orbit_calculator=None,
@@ -492,6 +493,7 @@ class SimulationEngine:
         self.stats["total_tasks_generated"] = 0
         self.stats["total_tasks_completed"] = 0
         self.stats["total_tasks_failed"] = 0
+        self.stats["simulation_duration"] = 0.0
         for sat in self.satellites.values():
             sat.task_queue.clear()
             sat.current_load = 0.0
@@ -602,13 +604,13 @@ class SimulationEngine:
             priority = random.choices([1, 2, 3, 4, 5], weights=priority_distribution)[0]
             size = random.uniform(size_range[0], size_range[1])
 
-            # Arrival within next 60 minutes.
-            arrival_offset = random.randint(0, 3600)
+            # Keep demo arrivals close enough that tasks become visible quickly.
+            arrival_offset = random.randint(0, 300)
             arrival_time = self.current_time + timedelta(seconds=arrival_offset)
 
             # Deadline = arrival + estimated processing + slack.
-            estimated_processing = size / 500
-            slack = random.uniform(300, 1800)
+            estimated_processing = max(size / 500, self.MIN_PROCESSING_SECONDS)
+            slack = random.uniform(1800, 7200)
             deadline = arrival_time + timedelta(seconds=estimated_processing + slack)
 
             task = Task(

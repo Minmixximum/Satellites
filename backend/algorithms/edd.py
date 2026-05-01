@@ -20,6 +20,8 @@ except ImportError:  # pragma: no cover
 class EDDScheduler(BaseScheduler):
     """Earliest Due Date scheduler."""
 
+    MIN_PROCESSING_SECONDS = 300.0
+
     def __init__(self):
         super().__init__("EDD")
 
@@ -54,7 +56,7 @@ class EDDScheduler(BaseScheduler):
                 if sat_queue_length[sat.id] >= 10:
                     continue
 
-                processing_time = task.get_processing_time(sat.capacity)
+                processing_time = max(task.get_processing_time(sat.capacity), self.MIN_PROCESSING_SECONDS)
                 finish_time = start_time + timedelta(seconds=processing_time)
 
                 if finish_time > task.deadline or finish_time > time_end:

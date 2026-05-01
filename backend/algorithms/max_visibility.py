@@ -20,6 +20,8 @@ except ImportError:  # pragma: no cover
 class MaxVisibilityScheduler(BaseScheduler):
     """Prioritize assignments with better visibility and available capacity."""
 
+    MIN_PROCESSING_SECONDS = 300.0
+
     def __init__(self, visibility_weight: float = 0.4, capacity_weight: float = 0.4, load_weight: float = 0.2):
         super().__init__("Max-Visibility")
         self.visibility_weight = visibility_weight
@@ -60,7 +62,7 @@ class MaxVisibilityScheduler(BaseScheduler):
                 if sat_queue_length[sat.id] >= 10:
                     continue
 
-                processing_time = task.get_processing_time(sat.capacity)
+                processing_time = max(task.get_processing_time(sat.capacity), self.MIN_PROCESSING_SECONDS)
                 finish_time = start_time + timedelta(seconds=processing_time)
                 if finish_time > task.deadline or finish_time > time_end:
                     continue
