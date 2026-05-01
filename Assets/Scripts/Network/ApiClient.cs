@@ -249,6 +249,12 @@ namespace SatelliteEdgeComputing.Network
             yield return SendBooleanRequest(url, UnityWebRequest.kHttpVerbPOST, null, callback, errorCallback);
         }
 
+        public IEnumerator ResetSimulation(Action<bool> callback = null, Action<string> errorCallback = null)
+        {
+            string url = $"{apiBaseUrl}/simulation/reset";
+            yield return SendBooleanRequest(url, UnityWebRequest.kHttpVerbPOST, null, callback, errorCallback);
+        }
+
         /// <summary>
         /// 设置调度算法
         /// </summary>

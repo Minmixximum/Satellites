@@ -301,23 +301,41 @@ namespace SatelliteEdgeComputing.Core
         /// </summary>
         public void ResetSimulation()
         {
-            Debug.Log("重置仿真...");
+            Debug.Log("Reset simulation...");
 
-            // 停止仿真
             if (isRunning)
             {
                 PauseSimulation();
             }
 
-            // 重置状态
             simulationTime = 0f;
             totalTasksProcessed = 0;
             tasksCompleted = 0;
             tasksFailed = 0;
             averageProcessingTime = 0f;
+            simStartTime = null;
+            simCurrentTime = null;
+            earthRotationAngle = 0.0;
+            tasks.Clear();
 
-            // 重新加载数据
-            if (isInitialized)
+            if (useBackend && Network.ApiClient.Instance.IsConnected)
+            {
+                StartCoroutine(Network.ApiClient.Instance.ResetSimulation(
+                    (success) =>
+                    {
+                        if (success)
+                        {
+                            RefreshTasks();
+                        }
+                        else
+                        {
+                            Debug.LogError("Backend simulation reset failed");
+                        }
+                    },
+                    (error) => Debug.LogError($"Backend simulation reset error: {error}")
+                ));
+            }
+            else if (isInitialized)
             {
                 LoadInitialData();
             }
@@ -325,8 +343,18 @@ namespace SatelliteEdgeComputing.Core
             OnSimulationReset?.Invoke();
         }
 
+        public void ClearTasksLocal()
+        {
+            tasks.Clear();
+            totalTasksProcessed = 0;
+            tasksCompleted = 0;
+            tasksFailed = 0;
+            averageProcessingTime = 0f;
+            OnDataUpdated?.Invoke();
+        }
+
         /// <summary>
-        /// 设置调度算法
+        /// Set scheduling algorithm.
         /// </summary>
         public void SetAlgorithm(string algorithm)
         {
@@ -902,6 +930,7 @@ namespace SatelliteEdgeComputing.Core
                 {
                     tasks = taskList;
                     Debug.Log($"刷新了{taskList.Count}个任务");
+                    UpdateStatistics(tasks);
                     OnDataUpdated?.Invoke();
                 },
                 (error) => Debug.LogError($"刷新任务失败: {error}")

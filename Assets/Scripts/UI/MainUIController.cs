@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using UnityEngine;
 using UnityEngine.UI;
 using SatelliteEdgeComputing.Network;
@@ -71,6 +71,7 @@ namespace SatelliteEdgeComputing.UI
         private float fpsUpdateTime = 0f;
         private float currentFPS = 60f;
         private bool isInitialized = false;  // 防止重复初始化
+        private bool isStartingSimulation = false;
 
         #region 初始化
         /// <summary>
@@ -510,7 +511,55 @@ namespace SatelliteEdgeComputing.UI
         #region 事件处理
         private void OnStartButtonClick()
         {
+            StartCoroutine(StartSimulationWithTasks());
+        }
+
+        private IEnumerator StartSimulationWithTasks()
+        {
+            if (simulationManager == null)
+                yield break;
+            if (isStartingSimulation)
+                yield break;
+
+            isStartingSimulation = true;
+
+            bool needsTasks = simulationManager.Tasks == null || simulationManager.Tasks.Count == 0;
+            if (needsTasks && Network.ApiClient.Instance.IsConnected)
+            {
+                bool initializeFinished = false;
+                bool initializeSucceeded = false;
+
+                StartCoroutine(Network.ApiClient.Instance.InitializeDemo(
+                    (success) =>
+                    {
+                        initializeSucceeded = success;
+                        initializeFinished = true;
+                    },
+                    (error) =>
+                    {
+                        Debug.LogError($"Failed to initialize tasks before start: {error}");
+                        initializeFinished = true;
+                    }
+                ));
+
+                yield return new WaitUntil(() => initializeFinished);
+
+                if (!initializeSucceeded)
+                {
+                    isStartingSimulation = false;
+                    yield break;
+                }
+
+                if (initializeSucceeded)
+                {
+                    yield return StartCoroutine(RefreshTasks());
+                    UpdateTaskList();
+                    UpdateUIElements();
+                }
+            }
+
             simulationManager.StartSimulation();
+            isStartingSimulation = false;
         }
 
         private void OnPauseButtonClick()
@@ -629,6 +678,7 @@ namespace SatelliteEdgeComputing.UI
                     if (success)
                     {
                         Debug.Log("任务清除成功");
+                        simulationManager.ClearTasksLocal();
                         // 刷新任务列表
                         StartCoroutine(RefreshTasks());
                         // 更新UI
@@ -1262,11 +1312,12 @@ namespace SatelliteEdgeComputing.UI
 
             // 面板尺寸 200x200
             // 标题
-            CreateText(taskPanel.transform, "Title", "任务列表", new Vector2(0, 80), new Vector2(180, 25), 16);
+            CreateText(taskPanel.transform, "Title", "任务列表", new Vector2(0,135), new Vector2(180, 25), 16);
 
             // 清除任务按钮放在底部
             if (clearTasksButton == null)
-                clearTasksButton = CreateButton(taskPanel.transform, "ClearTasksButton", "清除任务", new Vector2(0, -75), new Vector2(160, 28));
+                clearTasksButton = CreateButton(taskPanel.transform, "ClearTasksButton", "清除任务", new Vector2(0, -90), new Vector2(160, 28));
+            clearTasksButton.transform.SetAsLastSibling();
 
             EnsureTaskScrollView();
 
@@ -1362,7 +1413,7 @@ namespace SatelliteEdgeComputing.UI
                 RectTransform scrollRectTransform = scrollGO.AddComponent<RectTransform>();
                 scrollRectTransform.anchorMin = new Vector2(0f, 0f);
                 scrollRectTransform.anchorMax = new Vector2(1f, 1f);
-                scrollRectTransform.offsetMin = new Vector2(10f, 45f);
+                scrollRectTransform.offsetMin = new Vector2(10f, 76f);
                 scrollRectTransform.offsetMax = new Vector2(-10f, -35f);
 
                 Image scrollBackground = scrollGO.AddComponent<Image>();
