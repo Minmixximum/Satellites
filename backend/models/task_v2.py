@@ -97,10 +97,38 @@ class Task:
             return None
         return (self.actual_end - self.arrival_time).total_seconds()
 
+    def assign(self, satellite_id: str, start_time: datetime, end_time: Optional[datetime] = None):
+        self.status = TaskStatus.ASSIGNED
+        self.assigned_satellite = satellite_id
+        self.actual_start = _ensure_utc(start_time)
+        self.actual_end = _ensure_utc(end_time) if end_time else None
+
     def start(self, satellite_id: str, current_time: datetime):
         self.status = TaskStatus.RUNNING
         self.assigned_satellite = satellite_id
-        self.actual_start = _ensure_utc(current_time)
+        if self.actual_start is None:
+            self.actual_start = _ensure_utc(current_time)
+        else:
+            self.actual_start = _ensure_utc(self.actual_start)
+
+    def get_progress(self, current_time: Optional[datetime] = None) -> float:
+        now = _ensure_utc(current_time or datetime.now(timezone.utc))
+
+        if self.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.TIMEOUT):
+            return 1.0
+
+        if self.status == TaskStatus.RUNNING:
+            if self.actual_start is None or self.actual_end is None:
+                return 0.0
+
+            duration = (self.actual_end - self.actual_start).total_seconds()
+            if duration <= 0:
+                return 1.0
+
+            elapsed = (now - self.actual_start).total_seconds()
+            return max(0.0, min(1.0, elapsed / duration))
+
+        return 0.0
 
     def complete(self, current_time: datetime):
         self.status = TaskStatus.COMPLETED
@@ -110,7 +138,7 @@ class Task:
         self.status = TaskStatus.FAILED
         self.actual_end = _ensure_utc(current_time)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, current_time: Optional[datetime] = None) -> Dict[str, Any]:
         return {
             "id": self.id,
             "size": self.size,
@@ -126,6 +154,7 @@ class Task:
             "task_type": self.task_type,
             "input_data_size": self.input_data_size,
             "output_data_size": self.output_data_size,
+            "progress": self.get_progress(current_time),
         }
 
     @classmethod

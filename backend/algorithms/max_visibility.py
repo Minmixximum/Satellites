@@ -81,12 +81,10 @@ class MaxVisibilityScheduler(BaseScheduler):
                     best_finish_time = finish_time
 
             if best_sat is None:
-                task.fail(start_time)
                 result.tasks.append(task)
                 continue
 
-            task.start(best_sat.id, start_time)
-            task.complete(best_finish_time)
+            task.assign(best_sat.id, start_time, best_finish_time)
 
             result.assignments[task.id] = best_sat.id
             sat_queue_length[best_sat.id] += 1
@@ -97,7 +95,11 @@ class MaxVisibilityScheduler(BaseScheduler):
 
         if satellites:
             total_capacity = sum(sat.capacity for sat in satellites)
-            used_capacity = sum(t.size for t in result.tasks if t.status == TaskStatus.COMPLETED)
+            used_capacity = sum(
+                t.size
+                for t in result.tasks
+                if t.status in {TaskStatus.ASSIGNED, TaskStatus.RUNNING, TaskStatus.COMPLETED}
+            )
             result.resource_utilization = used_capacity / total_capacity if total_capacity > 0 else 0.0
 
         return result

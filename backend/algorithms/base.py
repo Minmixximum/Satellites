@@ -57,15 +57,22 @@ class ScheduleResult:
         completed = [t for t in self.tasks if t.status == TaskStatus.COMPLETED]
         failed = [t for t in self.tasks if t.status == TaskStatus.FAILED]
         timeout = [t for t in self.tasks if t.status == TaskStatus.TIMEOUT]
+        scheduled = [
+            t for t in self.tasks
+            if t.status in {TaskStatus.ASSIGNED, TaskStatus.RUNNING, TaskStatus.COMPLETED}
+            and t.actual_end is not None
+        ]
 
-        self.completed_tasks = len(completed)
+        # For scheduler-only results, ASSIGNED/RUNNING tasks with a planned end time
+        # count as successfully scheduled work.
+        self.completed_tasks = len(scheduled)
         self.failed_tasks = len(failed)
         self.timeout_tasks = len(timeout)
 
         self.completion_rate = self.completed_tasks / self.total_tasks if self.total_tasks > 0 else 0.0
 
-        response_times = [t.get_response_time() for t in completed if t.get_response_time() is not None]
-        turnaround_times = [t.get_turnaround_time() for t in completed if t.get_turnaround_time() is not None]
+        response_times = [t.get_response_time() for t in scheduled if t.get_response_time() is not None]
+        turnaround_times = [t.get_turnaround_time() for t in scheduled if t.get_turnaround_time() is not None]
         waiting_times = [t.get_wait_time(t.deadline) for t in self.tasks]
 
         self.avg_response_time = sum(response_times) / len(response_times) if response_times else 0.0
@@ -73,13 +80,17 @@ class ScheduleResult:
         self.avg_waiting_time = sum(waiting_times) / len(waiting_times) if waiting_times else 0.0
 
         delays = []
-        for t in completed:
+        for t in scheduled:
             if t.actual_end and t.deadline:
                 delays.append((t.actual_end - t.deadline).total_seconds())
         self.avg_delay = sum(delays) / len(delays) if delays else 0.0
 
         high_priority_tasks = [t for t in self.tasks if t.priority >= 4]
-        high_priority_completed = [t for t in high_priority_tasks if t.status == TaskStatus.COMPLETED]
+        high_priority_completed = [
+            t for t in high_priority_tasks
+            if t.status in {TaskStatus.ASSIGNED, TaskStatus.RUNNING, TaskStatus.COMPLETED}
+            and t.actual_end is not None
+        ]
         self.high_priority_completion_rate = (
             len(high_priority_completed) / len(high_priority_tasks) if high_priority_tasks else 0.0
         )

@@ -95,7 +95,7 @@ def _initialize_data(app: Flask) -> None:
         satellites_data = _generate_test_satellites(config.DEFAULT_SATELLITE_COUNT)
 
     ground_stations_data = _generate_test_ground_stations(config.DEFAULT_GROUND_STATION_COUNT)
-    tasks_data = generate_tasks(count=4)
+    tasks_data = generate_tasks(count=config.DEFAULT_GENERATE_TASK_NUM)
 
     init_satellites(satellites_data)
     init_ground_stations(ground_stations_data)
@@ -252,14 +252,16 @@ def _generate_default_tasks(count: Optional[int] = None) -> List[dict]:
 
     now = utc_now()
     tasks: List[dict] = []
+    arrival_interval = [i*10 for i in range(1,count)]
 
     for i in range(count):
-        arrival = now + timedelta(minutes=random.randint(0, 60))
-        deadline = arrival + timedelta(minutes=random.randint(30, 180))
+        
+        arrival = now + timedelta(seconds=arrival_interval[i-1])
+        deadline = arrival + timedelta(minutes=random.randint(60, 200))
         tasks.append(
             {
                 "id": f"task_{i + 1:03d}",
-                "size": random.choice([200, 400, 600, 800, 1000]),
+                "size": random.choice([200, 400, 600, 800, 1000,2000,1500]),
                 "priority": random.randint(1, 5),
                 "deadline": deadline.isoformat(timespec="seconds"),
                 "arrival_time": arrival.isoformat(timespec="seconds"),

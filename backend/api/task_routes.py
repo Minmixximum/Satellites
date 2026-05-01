@@ -39,11 +39,26 @@ def _resolve_reference_time() -> datetime:
     return utc_now()
 
 
+def _get_live_tasks() -> List[dict]:
+    engine = _get_engine()
+    if not engine or not getattr(engine, "tasks", None):
+        return list(_tasks.values())
+
+    current_time = _resolve_reference_time()
+    live_tasks: List[dict] = []
+    for task_id, task in engine.tasks.items():
+        task_dict = task.to_dict(current_time=current_time)
+        _tasks[task_id] = task_dict
+        live_tasks.append(task_dict)
+
+    return live_tasks
+
+
 @task_bp.route("/tasks/list", methods=["GET"])
 def get_tasks():
     """Get task list."""
     status = request.args.get("status")
-    tasks = list(_tasks.values())
+    tasks = _get_live_tasks()
 
     if status:
         tasks = [t for t in tasks if t.get("status") == status]
@@ -54,6 +69,11 @@ def get_tasks():
 @task_bp.route("/tasks/<task_id>", methods=["GET"])
 def get_task(task_id: str):
     """Get a single task."""
+    live_tasks = {task["id"]: task for task in _get_live_tasks()}
+
+    if task_id in live_tasks:
+        return jsonify({"success": True, "data": live_tasks[task_id]})
+
     if task_id not in _tasks:
         return jsonify({"success": False, "error": f"Task {task_id} not found"}), 404
 

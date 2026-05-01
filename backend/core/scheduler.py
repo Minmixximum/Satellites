@@ -246,7 +246,7 @@ class SimulationEngine:
 
         # Time acceleration
         self.sim_time: Optional[datetime] = None  # Simulated time (single source of truth)
-        self.speed_factor: float = 1200.0  # Default: 1 real second = 1200 simulated seconds
+        self.speed_factor: float = 60.0  # Default: 1 real second = 60 simulated seconds
 
         # 仿真数据
         self.satellites: Dict[str, Satellite] = {}
@@ -292,6 +292,7 @@ class SimulationEngine:
     def start(self, algorithm: str = "fcfs"):
         """开始仿真"""
         self.active_algorithm = algorithm
+        self._align_time_to_pending_tasks()
         self.is_running = True
         self.is_paused = False
 
@@ -312,6 +313,26 @@ class SimulationEngine:
         self.is_paused = False
         self._stop_simulation_thread()
         self.current_time = self.start_time
+
+    def _align_time_to_pending_tasks(self):
+        """Start near the first task instead of waiting days for stale TLE reference time."""
+        if not self.tasks:
+            return
+
+        pending_arrivals = [
+            task.arrival_time
+            for task in self.tasks.values()
+            if task.status == TaskStatus.PENDING and task.arrival_time is not None
+        ]
+        if not pending_arrivals:
+            return
+
+        first_arrival = min(pending_arrivals)
+        if self.current_time is None or self.current_time < first_arrival:
+            self.current_time = first_arrival
+            self.sim_time = first_arrival
+            if self.start_time is None or self.start_time > first_arrival:
+                self.start_time = first_arrival
 
     def _start_simulation_thread(self):
         """启动后台仿真线程"""
@@ -371,7 +392,10 @@ class SimulationEngine:
         # 检查可见性
         self._update_visibility()
 
-        # 检查任务状态
+        # First settle currently active tasks, then assign new work,
+        # then activate tasks whose execution window has started.
+        self._update_task_status()
+        self.run_scheduling()
         self._update_task_status()
 
     def _update_satellite_positions(self):
@@ -412,7 +436,32 @@ class SimulationEngine:
                     task.status = TaskStatus.TIMEOUT
                     self.stats["total_tasks_failed"] += 1
 
+            elif task.status == TaskStatus.ASSIGNED:
+                if task.is_expired(self.current_time):
+                    task.status = TaskStatus.TIMEOUT
+                    self.stats["total_tasks_failed"] += 1
+                    continue
+
+                if task.actual_start and self.current_time >= task.actual_start:
+                    if task.assigned_satellite in self.satellites:
+                        sat = self.satellites[task.assigned_satellite]
+                        if not any(queue_task.id == task.id for queue_task in sat.task_queue):
+                            sat.add_task(task)
+                        task.start(task.assigned_satellite, task.actual_start)
+                    else:
+                        task.fail(self.current_time)
+                        self.stats["total_tasks_failed"] += 1
+
             elif task.status == TaskStatus.RUNNING:
+                if task.is_expired(self.current_time) and (task.actual_end is None or self.current_time < task.actual_end):
+                    task.status = TaskStatus.TIMEOUT
+                    self.stats["total_tasks_failed"] += 1
+                    if task.assigned_satellite in self.satellites:
+                        sat = self.satellites[task.assigned_satellite]
+                        sat.failed_tasks += 1
+                        sat.remove_task(task.id)
+                    continue
+
                 # 检查是否完成
                 if task.actual_end and self.current_time >= task.actual_end:
                     task.complete(self.current_time)
@@ -443,6 +492,11 @@ class SimulationEngine:
         self.stats["total_tasks_generated"] = 0
         self.stats["total_tasks_completed"] = 0
         self.stats["total_tasks_failed"] = 0
+        for sat in self.satellites.values():
+            sat.task_queue.clear()
+            sat.current_load = 0.0
+            sat.completed_tasks = 0
+            sat.failed_tasks = 0
 
     def run_scheduling(self) -> Optional[ScheduleResult]:
         """执行调度"""
@@ -461,7 +515,7 @@ class SimulationEngine:
             satellites=list(self.satellites.values()),
             ground_stations=list(self.ground_stations.values()),
             time_start=self.current_time,
-            time_end=self.current_time + timedelta(hours=1)
+            time_end=self.current_time + timedelta(hours=24)
         )
 
         # 应用调度结果
@@ -490,6 +544,7 @@ class SimulationEngine:
             "tasks_count": {
                 "total": len(self.tasks),
                 "pending": len([t for t in self.tasks.values() if t.status == TaskStatus.PENDING]),
+                "assigned": len([t for t in self.tasks.values() if t.status == TaskStatus.ASSIGNED]),
                 "running": len([t for t in self.tasks.values() if t.status == TaskStatus.RUNNING]),
                 "completed": len([t for t in self.tasks.values() if t.status == TaskStatus.COMPLETED]),
                 "failed": len([t for t in self.tasks.values() if t.status in [TaskStatus.FAILED, TaskStatus.TIMEOUT]])
