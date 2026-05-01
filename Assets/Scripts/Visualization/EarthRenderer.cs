@@ -35,7 +35,7 @@ namespace SatelliteEdgeComputing.Visualization
 
         // 地球旋转参数
         private double earthRotationAngleRad = 0.0; // 当前地球旋转角度（弧度）
-        private float speedFactor = 1200.0f; // 时间加速因子
+        private float speedFactor = 60.0f; // 时间加速因子
         private bool useSmoothRotation = true; // 是否使用平滑旋转
         private double lastSyncAngle = 0.0; // 上次同步的角度
         private const double EARTH_ANGULAR_VELOCITY = 7.292115e-5; // 地球角速度 rad/s
@@ -468,7 +468,7 @@ namespace SatelliteEdgeComputing.Visualization
         /// </summary>
         public void SetSpeedFactor(float factor)
         {
-            speedFactor = Mathf.Clamp(factor, 1200f, 3600f);
+            speedFactor = Mathf.Clamp(factor, 60f, 3600f);
         }
 
         private int debugFrameCount = 0;  // 调试用

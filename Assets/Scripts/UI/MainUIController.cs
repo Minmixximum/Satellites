@@ -139,9 +139,9 @@ namespace SatelliteEdgeComputing.UI
             // 初始化时间滑块
             if (timeScaleSlider != null)
             {
-                timeScaleSlider.minValue = 1200f;
+                timeScaleSlider.minValue = 60f;
                 timeScaleSlider.maxValue = 3600f;
-                timeScaleSlider.SetValueWithoutNotify(simulationManager != null ? simulationManager.SpeedFactor : 1200f);
+                timeScaleSlider.SetValueWithoutNotify(simulationManager != null ? simulationManager.SpeedFactor : 60f);
             }
 
             isInitialized = true;
@@ -169,7 +169,7 @@ namespace SatelliteEdgeComputing.UI
                 timeScaleSlider.onValueChanged.AddListener(OnTimeScaleChanged);
 
             if (timeScaleValueText != null)
-                timeScaleValueText.text = $"x{(simulationManager != null ? simulationManager.SpeedFactor : 1200f):F1}";
+                timeScaleValueText.text = $"x{(simulationManager != null ? simulationManager.SpeedFactor : 60f):F1}";
 
             if (showOrbitsToggle != null)
                 showOrbitsToggle.onValueChanged.AddListener(OnShowOrbitsChanged);
@@ -408,7 +408,7 @@ namespace SatelliteEdgeComputing.UI
         private void UpdateTaskList()
         {
             // 确保taskListContent存在
-            EnsureTaskListContent();
+            EnsureTaskScrollView();
 
             if (taskListContent == null)
             {
@@ -419,7 +419,7 @@ namespace SatelliteEdgeComputing.UI
             if (taskItemPrefab == null)
             {
                 // 动态创建taskItemPrefab
-                taskItemPrefab = CreateDefaultTaskItemPrefab();
+                taskItemPrefab = CreateRichTaskItemPrefab();
                 Debug.Log($"[MainUIController] 动态创建了taskItemPrefab: {taskItemPrefab}");
             }
 
@@ -446,8 +446,11 @@ namespace SatelliteEdgeComputing.UI
                 rect.anchoredPosition = Vector2.zero;
                 rect.sizeDelta = new Vector2(180, 30);
 
+                LayoutElement layoutElement = emptyItem.AddComponent<LayoutElement>();
+                layoutElement.preferredHeight = 30f;
+
                 Text text = emptyItem.AddComponent<Text>();
-                text.text = "暂无任务！";
+                text.text = "暂无任务";
                 text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
                 text.fontSize = 14;
                 text.color = Color.gray;
@@ -456,15 +459,10 @@ namespace SatelliteEdgeComputing.UI
             }
 
             // 添加新任务项，垂直排列
-            int maxTasks = 20; // 限制显示数量
             int count = 0;
-            float itemHeight = 65f; // 每个任务项的高度
-            float startY = -5f; // 从顶部开始，留一点间距
 
             foreach (var task in simulationManager.Tasks)
             {
-                if (count >= maxTasks) break;
-
                 GameObject taskItem = Instantiate(taskItemPrefab, taskListContent);
                 taskItem.SetActive(true); // 确保启用
                 taskItem.name = $"TaskItem_{task.id}"; // 设置有意义的名称
@@ -473,12 +471,11 @@ namespace SatelliteEdgeComputing.UI
                 RectTransform itemRect = taskItem.GetComponent<RectTransform>();
                 if (itemRect != null)
                 {
-                    Debug.Log("更新任务列表中......");
-                    itemRect.anchorMin = new Vector2(0, 1);
-                    itemRect.anchorMax = new Vector2(1, 1);
-                    itemRect.pivot = new Vector2(0.5f, 1);
-                    itemRect.anchoredPosition = new Vector2(0, startY - count * itemHeight);
-                    itemRect.sizeDelta = new Vector2(-10, itemHeight - 5);
+                    itemRect.anchorMin = new Vector2(0f, 1f);
+                    itemRect.anchorMax = new Vector2(1f, 1f);
+                    itemRect.pivot = new Vector2(0.5f, 1f);
+                    itemRect.anchoredPosition = Vector2.zero;
+                    itemRect.sizeDelta = new Vector2(0f, itemRect.sizeDelta.y);
                 }
 
                 TaskItemUI taskUI = taskItem.GetComponent<TaskItemUI>();
@@ -537,7 +534,7 @@ namespace SatelliteEdgeComputing.UI
 
         private void OnTimeScaleChanged(float value)
         {
-            value = Mathf.Max(1200f, value);
+            value = Mathf.Max(60f, value);
             simulationManager.SetSpeedFactor(value);
             if (timeScaleValueText != null)
             {
@@ -1271,6 +1268,8 @@ namespace SatelliteEdgeComputing.UI
             if (clearTasksButton == null)
                 clearTasksButton = CreateButton(taskPanel.transform, "ClearTasksButton", "清除任务", new Vector2(0, -75), new Vector2(160, 28));
 
+            EnsureTaskScrollView();
+
             // 任务列表内容容器（需要正确的RectTransform设置）
             if (taskListContent == null)
             {
@@ -1301,7 +1300,7 @@ namespace SatelliteEdgeComputing.UI
             // 创建任务项预制体（如果未在Inspector中赋值）
             if (taskItemPrefab == null)
             {
-                taskItemPrefab = CreateDefaultTaskItemPrefab();
+                taskItemPrefab = CreateRichTaskItemPrefab();
                 Debug.Log("[MainUIController] Created default taskItemPrefab");
             }
 
@@ -1311,6 +1310,201 @@ namespace SatelliteEdgeComputing.UI
         /// <summary>
         /// 创建默认的任务项预制体
         /// </summary>
+        private void EnsureTaskScrollView()
+        {
+            if (taskListContent != null && taskScrollRect != null)
+                return;
+
+            if (taskScrollRect == null && taskListContent != null)
+            {
+                Destroy(taskListContent.gameObject);
+                taskListContent = null;
+            }
+
+            if (taskPanel == null)
+            {
+                var existingPanel = GameObject.Find("TaskPanel");
+                if (existingPanel != null)
+                {
+                    taskPanel = existingPanel;
+                }
+                else
+                {
+                    Canvas canvas = FindObjectOfType<Canvas>();
+                    if (canvas == null)
+                    {
+                        GameObject canvasGO = new GameObject("MainCanvas");
+                        canvas = canvasGO.AddComponent<Canvas>();
+                        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                        canvasGO.AddComponent<CanvasScaler>();
+                        canvasGO.AddComponent<GraphicRaycaster>();
+                    }
+
+                    taskPanel = CreatePanel(canvas.transform, "TaskPanel", new Vector2(400, -165), new Vector2(220, 320));
+                }
+            }
+
+            if (taskPanel == null)
+                return;
+
+            if (taskScrollRect == null)
+            {
+                Transform existingScroll = taskPanel.transform.Find("TaskScrollRect");
+                if (existingScroll != null)
+                    taskScrollRect = existingScroll.GetComponent<ScrollRect>();
+            }
+
+            if (taskScrollRect == null)
+            {
+                GameObject scrollGO = new GameObject("TaskScrollRect");
+                scrollGO.transform.SetParent(taskPanel.transform, false);
+
+                RectTransform scrollRectTransform = scrollGO.AddComponent<RectTransform>();
+                scrollRectTransform.anchorMin = new Vector2(0f, 0f);
+                scrollRectTransform.anchorMax = new Vector2(1f, 1f);
+                scrollRectTransform.offsetMin = new Vector2(10f, 45f);
+                scrollRectTransform.offsetMax = new Vector2(-10f, -35f);
+
+                Image scrollBackground = scrollGO.AddComponent<Image>();
+                scrollBackground.color = new Color(0.12f, 0.16f, 0.2f, 0.9f);
+
+                taskScrollRect = scrollGO.AddComponent<ScrollRect>();
+                taskScrollRect.horizontal = false;
+                taskScrollRect.vertical = true;
+                taskScrollRect.movementType = ScrollRect.MovementType.Clamped;
+                taskScrollRect.scrollSensitivity = 24f;
+
+                GameObject viewportGO = new GameObject("Viewport");
+                viewportGO.transform.SetParent(scrollGO.transform, false);
+                RectTransform viewportRect = viewportGO.AddComponent<RectTransform>();
+                viewportRect.anchorMin = Vector2.zero;
+                viewportRect.anchorMax = Vector2.one;
+                viewportRect.offsetMin = Vector2.zero;
+                viewportRect.offsetMax = Vector2.zero;
+
+                Image viewportImage = viewportGO.AddComponent<Image>();
+                viewportImage.color = new Color(0f, 0f, 0f, 0.02f);
+                viewportGO.AddComponent<RectMask2D>();
+
+                GameObject contentGO = new GameObject("TaskListContent");
+                contentGO.transform.SetParent(viewportGO.transform, false);
+                RectTransform contentRect = contentGO.AddComponent<RectTransform>();
+                contentRect.anchorMin = new Vector2(0f, 1f);
+                contentRect.anchorMax = new Vector2(1f, 1f);
+                contentRect.pivot = new Vector2(0.5f, 1f);
+                contentRect.anchoredPosition = Vector2.zero;
+                contentRect.sizeDelta = Vector2.zero;
+
+                VerticalLayoutGroup layoutGroup = contentGO.AddComponent<VerticalLayoutGroup>();
+                layoutGroup.padding = new RectOffset(6, 6, 6, 6);
+                layoutGroup.spacing = 6f;
+                layoutGroup.childAlignment = TextAnchor.UpperCenter;
+                layoutGroup.childControlWidth = true;
+                layoutGroup.childControlHeight = false;
+                layoutGroup.childForceExpandWidth = true;
+                layoutGroup.childForceExpandHeight = false;
+
+                ContentSizeFitter fitter = contentGO.AddComponent<ContentSizeFitter>();
+                fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+                fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+                taskScrollRect.viewport = viewportRect;
+                taskScrollRect.content = contentRect;
+                taskListContent = contentGO.transform;
+            }
+
+            if (taskListContent == null && taskScrollRect != null)
+                taskListContent = taskScrollRect.content;
+        }
+
+        private Text CreateTaskTextField(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 anchoredPosition, Vector2 size, int fontSize, TextAnchor alignment, Color color)
+        {
+            GameObject textObject = new GameObject(name);
+            textObject.transform.SetParent(parent, false);
+
+            RectTransform rectTransform = textObject.AddComponent<RectTransform>();
+            rectTransform.anchorMin = anchorMin;
+            rectTransform.anchorMax = anchorMax;
+            rectTransform.pivot = new Vector2(anchorMin.x, 1f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+
+            Text text = textObject.AddComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            text.fontSize = fontSize;
+            text.color = color;
+            text.alignment = alignment;
+
+            return text;
+        }
+
+        private GameObject CreateRichTaskItemPrefab()
+        {
+            GameObject prefab = new GameObject("TaskItemPrefab");
+            prefab.SetActive(false);
+
+            RectTransform rootRect = prefab.AddComponent<RectTransform>();
+            rootRect.sizeDelta = new Vector2(0f, 92f);
+            rootRect.pivot = new Vector2(0.5f, 1f);
+
+            LayoutElement layoutElement = prefab.AddComponent<LayoutElement>();
+            layoutElement.preferredHeight = 92f;
+
+            TaskItemUI taskItemUI = prefab.AddComponent<TaskItemUI>();
+
+            GameObject bgObj = new GameObject("Background");
+            bgObj.transform.SetParent(prefab.transform, false);
+            RectTransform bgRect = bgObj.AddComponent<RectTransform>();
+            bgRect.anchorMin = Vector2.zero;
+            bgRect.anchorMax = Vector2.one;
+            bgRect.offsetMin = Vector2.zero;
+            bgRect.offsetMax = Vector2.zero;
+            Image bgImage = bgObj.AddComponent<Image>();
+            bgImage.color = new Color(0.15f, 0.15f, 0.2f, 0.92f);
+
+            Text nameText = CreateTaskTextField(prefab.transform, "TaskName", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -6f), new Vector2(-16f, 18f), 12, TextAnchor.MiddleLeft, Color.white);
+            Text statusText = CreateTaskTextField(prefab.transform, "Status", new Vector2(0f, 1f), new Vector2(0.5f, 1f), new Vector2(8f, -28f), new Vector2(-6f, 14f), 10, TextAnchor.MiddleLeft, Color.gray);
+            Text priorityText = CreateTaskTextField(prefab.transform, "Priority", new Vector2(0.5f, 1f), new Vector2(1f, 1f), new Vector2(-8f, -28f), new Vector2(-8f, 14f), 10, TextAnchor.MiddleRight, Color.gray);
+            Text sizeText = CreateTaskTextField(prefab.transform, "TaskSize", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -46f), new Vector2(-16f, 14f), 10, TextAnchor.MiddleLeft, new Color(0.78f, 0.83f, 0.92f, 1f));
+            Text assignmentText = CreateTaskTextField(prefab.transform, "Assignment", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -62f), new Vector2(-16f, 14f), 10, TextAnchor.MiddleLeft, new Color(0.65f, 0.85f, 1f, 1f));
+
+            GameObject progressBgObj = new GameObject("ProgressBackground");
+            progressBgObj.transform.SetParent(prefab.transform, false);
+            RectTransform progressBgRect = progressBgObj.AddComponent<RectTransform>();
+            progressBgRect.anchorMin = new Vector2(0f, 0f);
+            progressBgRect.anchorMax = new Vector2(1f, 0f);
+            progressBgRect.pivot = new Vector2(0.5f, 0f);
+            progressBgRect.anchoredPosition = new Vector2(0f, 8f);
+            progressBgRect.sizeDelta = new Vector2(-16f, 12f);
+            Image progressBgImage = progressBgObj.AddComponent<Image>();
+            progressBgImage.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+
+            GameObject progressFillObj = new GameObject("ProgressFill");
+            progressFillObj.transform.SetParent(progressBgObj.transform, false);
+            RectTransform progressFillRect = progressFillObj.AddComponent<RectTransform>();
+            progressFillRect.anchorMin = Vector2.zero;
+            progressFillRect.anchorMax = Vector2.one;
+            progressFillRect.offsetMin = Vector2.zero;
+            progressFillRect.offsetMax = Vector2.zero;
+            Image progressFillImage = progressFillObj.AddComponent<Image>();
+            progressFillImage.color = new Color(0.2f, 0.6f, 1f, 1f);
+            progressFillImage.type = Image.Type.Filled;
+            progressFillImage.fillMethod = Image.FillMethod.Horizontal;
+
+            Text progressText = CreateTaskTextField(progressBgObj.transform, "ProgressText", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9, TextAnchor.MiddleCenter, Color.white);
+
+            System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            typeof(TaskItemUI).GetField("taskNameText", flags)?.SetValue(taskItemUI, nameText);
+            typeof(TaskItemUI).GetField("taskStatusText", flags)?.SetValue(taskItemUI, statusText);
+            typeof(TaskItemUI).GetField("taskPriorityText", flags)?.SetValue(taskItemUI, priorityText);
+            typeof(TaskItemUI).GetField("taskSizeText", flags)?.SetValue(taskItemUI, sizeText);
+            typeof(TaskItemUI).GetField("taskAssignmentText", flags)?.SetValue(taskItemUI, assignmentText);
+            typeof(TaskItemUI).GetField("taskProgressText", flags)?.SetValue(taskItemUI, progressText);
+            typeof(TaskItemUI).GetField("progressBar", flags)?.SetValue(taskItemUI, progressFillImage);
+
+            return prefab;
+        }
+
         private GameObject CreateDefaultTaskItemPrefab()
         {
             GameObject prefab = new GameObject("TaskItemPrefab");
@@ -1554,6 +1748,8 @@ namespace SatelliteEdgeComputing.UI
         [SerializeField] private Text taskNameText;
         [SerializeField] private Text taskStatusText;
         [SerializeField] private Text taskPriorityText;
+        [SerializeField] private Text taskSizeText;
+        [SerializeField] private Text taskAssignmentText;
         [SerializeField] private Text taskProgressText;
         [SerializeField] private Image progressBar;
         [SerializeField] private Color pendingColor = Color.gray;
@@ -1586,6 +1782,12 @@ namespace SatelliteEdgeComputing.UI
             if (taskPriorityText != null)
                 taskPriorityText.text = $"优先级: {taskData.priority}";
 
+            if (taskSizeText != null)
+                taskSizeText.text = $"计算: {taskData.computation:F1} | 数据: {taskData.dataSize:F1}";
+
+            if (taskAssignmentText != null)
+                taskAssignmentText.text = GetAssignmentText();
+
             if (taskProgressText != null)
                 taskProgressText.text = $"{taskData.progress:P0}";
 
@@ -1608,6 +1810,14 @@ namespace SatelliteEdgeComputing.UI
                 case "failed": return "失败";
                 default: return "未知";
             }
+        }
+
+        private string GetAssignmentText()
+        {
+            if (taskData == null || taskData.assignedSatelliteId <= 0)
+                return "分配: 未分配";
+
+            return $"分配: SAT-{taskData.assignedSatelliteId:000}";
         }
 
         private Color GetStatusColor(string status)

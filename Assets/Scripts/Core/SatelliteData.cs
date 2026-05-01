@@ -76,6 +76,8 @@ namespace SatelliteEdgeComputing.Core
         public string status;       // 状态：pending, assigned, processing, completed
         public int assignedSatelliteId; // 分配的卫星ID
         public float progress;      // 进度（0-1）
+        public float scheduledStartTime = -1f;
+        public float scheduledEndTime = -1f;
 
         // 是否已分配
         public bool IsAssigned => !string.IsNullOrEmpty(status) && status != "pending";
@@ -88,7 +90,7 @@ namespace SatelliteEdgeComputing.Core
     public class SimulationConfig
     {
         public string algorithm= "fcfs";    // 调度算法：fcfs, sjf, edd, max_visibility
-        public float timeScale = 1200.0f; // 时间缩放因子
+        public float timeScale = 60.0f; // 时间缩放因子
         public int maxTasks = 10;  // 最大任务数
         public bool showOrbits = true; // 显示轨道
         public bool showLinks = true; // 显示通信链路

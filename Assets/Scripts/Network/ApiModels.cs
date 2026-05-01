@@ -238,6 +238,7 @@ namespace SatelliteEdgeComputing.Network
         public string assigned_satellite;
         public string actual_start;
         public string actual_end;
+        public float progress = -1f;
         public double source_lat;
         public double source_lon;
         public string task_type;

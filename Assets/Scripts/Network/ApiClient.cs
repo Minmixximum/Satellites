@@ -222,7 +222,7 @@ namespace SatelliteEdgeComputing.Network
         /// <summary>
         /// 启动仿真
         /// </summary>
-        public IEnumerator StartSimulation(string algorithm = "fcfs", int maxTasks = 100, float speedFactor = 1200.0f,
+        public IEnumerator StartSimulation(string algorithm = "fcfs", int maxTasks = 100, float speedFactor = 60.0f,
             Action<bool> callback = null, Action<string> errorCallback = null)
         {
             string url = $"{apiBaseUrl}/simulation/start";
@@ -644,13 +644,20 @@ namespace SatelliteEdgeComputing.Network
             else
                 task.assignedSatelliteId = 0;
 
-            task.progress = task.status switch
+            if (backendTask.progress >= 0f)
             {
-                "completed" => 1f,
-                "running" => 0.5f,
-                "failed" => 1f,
-                _ => 0f
-            };
+                task.progress = Mathf.Clamp01(backendTask.progress);
+            }
+            else
+            {
+                task.progress = task.status switch
+                {
+                    "completed" => 1f,
+                    "running" => 0.5f,
+                    "failed" => 1f,
+                    _ => 0f
+                };
+            }
 
             return task;
         }
@@ -702,7 +709,7 @@ namespace SatelliteEdgeComputing.Network
                     altitude = UnityEngine.Random.Range(500000f, 600000f),
                     capacity = UnityEngine.Random.Range(50f, 150f),
                     power = UnityEngine.Random.Range(30f, 100f),
-                    taskCount = UnityEngine.Random.Range(0, 10),
+                    taskCount = 0,
                     status = "idle"
                 });
             }
@@ -765,14 +772,9 @@ namespace SatelliteEdgeComputing.Network
                     deadline = UnityEngine.Random.Range(60f, 600f),
                     computation = UnityEngine.Random.Range(10f, 100f),
                     dataSize = UnityEngine.Random.Range(1f, 50f),
-                    status = UnityEngine.Random.Range(0, 3) switch
-                    {
-                        0 => "pending",
-                        1 => "assigned",
-                        _ => "running"
-                    },
-                    assignedSatelliteId = (UnityEngine.Random.Range(1, 16)),
-                    progress = UnityEngine.Random.Range(0f, 1f)
+                    status = "pending",
+                    assignedSatelliteId = 0,
+                    progress = 0f
                 });
             }
 
