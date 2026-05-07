@@ -171,7 +171,9 @@ namespace SatelliteEdgeComputing.Network
     [Serializable]
     public class InitializeScenarioRequest
     {
-        // 可留空，使用默认配置
+        public int satellite_count = 5;
+        public int ground_station_count = 3;
+        public int task_count = 8;
     }
 
     /// <summary>

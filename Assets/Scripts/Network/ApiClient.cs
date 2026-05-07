@@ -536,10 +536,17 @@ namespace SatelliteEdgeComputing.Network
         /// <summary>
         /// 从场景文件初始化数据
         /// </summary>
-        public IEnumerator InitializeScenario(Action<bool> callback = null, Action<string> errorCallback = null)
+        public IEnumerator InitializeScenario(int satelliteCount = 5, int groundStationCount = 3, int taskCount = 8, Action<bool> callback = null, Action<string> errorCallback = null)
         {
             string url = $"{apiBaseUrl}/initialize/scenario";
-            yield return SendBooleanRequest(url, UnityWebRequest.kHttpVerbPOST, null, callback, errorCallback);
+            var requestData = new InitializeScenarioRequest
+            {
+                satellite_count = satelliteCount,
+                ground_station_count = groundStationCount,
+                task_count = taskCount
+            };
+            string json = JsonUtility.ToJson(requestData);
+            yield return SendBooleanRequest(url, UnityWebRequest.kHttpVerbPOST, json, callback, errorCallback);
         }
 
         /// <summary>

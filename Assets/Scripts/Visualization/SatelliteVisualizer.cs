@@ -5,11 +5,11 @@ using UnityEngine.UI;
 namespace SatelliteEdgeComputing.Visualization
 {
     /// <summary>
-    /// 卫星可视化器
+    /// Satellite visualizer.
     /// </summary>
     public class SatelliteVisualizer : MonoBehaviour
     {
-        [Header("卫星设置")]
+        [Header("Satellite Settings")]
         [SerializeField] private GameObject satellitePrefab;
         [SerializeField] private float satelliteScale = 50000f;
         [SerializeField] private bool showLabels = true;
@@ -18,32 +18,35 @@ namespace SatelliteEdgeComputing.Visualization
         [SerializeField] private Color busyColor = Color.yellow;
         [SerializeField] private Color overloadedColor = Color.red;
 
-        [Header("标签设置")]
+        [Header("Label Settings")]
         [SerializeField] private GameObject labelPrefab;
         [SerializeField] private float labelOffset = 20000f;
         [SerializeField] private Font labelFont;
         [SerializeField] private int labelFontSize = 14;
         [SerializeField] private Color labelColor = Color.white;
 
-        [Header("状态指示器")]
+        [Header("Status Indicator")]
         [SerializeField] private GameObject statusIndicatorPrefab;
         [SerializeField] private float indicatorScale = 2000f;
 
-        [Header("轨道设置")]
+        [Header("Orbit Settings")]
         [SerializeField] private bool showOrbit = true;
         [SerializeField] private Material orbitMaterial;
         [SerializeField] private float orbitWidth = 0.5f;
         [SerializeField] private Color orbitColor = new Color(0.3f, 0.6f, 1f, 0.5f);
-        [SerializeField] private int orbitSegments = 60;
+        [SerializeField] private int orbitSegments = 96;
+        [SerializeField] private int highLoadOrbitSegments = 48;
+        [SerializeField] private float orbitRefreshInterval = 1f;
 
-        // 卫星实例字典
-        private Dictionary<int, SatelliteInstance> satelliteInstances = new Dictionary<int, SatelliteInstance>();
+        [Header("Performance")]
+        [SerializeField] private bool verboseLogging = false;
+        [SerializeField] private int autoHideLabelsThreshold = 30;
+        [SerializeField] private int highLoadOrbitThreshold = 80;
+
+        private readonly Dictionary<int, SatelliteInstance> satelliteInstances = new Dictionary<int, SatelliteInstance>();
         private EarthRenderer earthRenderer;
         private Transform canvasTransform;
 
-        /// <summary>
-        /// 卫星实例封装
-        /// </summary>
         private class SatelliteInstance
         {
             public Core.Satellite data;
@@ -54,14 +57,17 @@ namespace SatelliteEdgeComputing.Visualization
             public Text labelText;
             public GameObject statusIndicator;
             public LineRenderer orbitLine;
-            public List<Vector3> orbitPoints = new List<Vector3>();
             public Vector3 worldPosition;
+            public Vector3 previousWorldPosition;
             public Vector3 interpolationStartPosition;
+            public Vector3 orbitNormal = Vector3.zero;
+            public Vector3 lastOrbitCenterPosition = Vector3.zero;
+            public Vector3[] orbitPositions;
             public float interpolationStartTime;
+            public float lastOrbitRefreshTime = -999f;
             public bool hasPosition;
 
-            public void UpdateVisualization(EarthRenderer earthRenderer, float scale,
-                Color idleColor, Color busyColor, Color overloadedColor)
+            public void UpdateVisualization(EarthRenderer earthRenderer, Color idleColor, Color busyColor, Color overloadedColor)
             {
                 if (gameObject == null || earthRenderer == null) return;
 
@@ -69,6 +75,7 @@ namespace SatelliteEdgeComputing.Visualization
                 if (!hasPosition)
                 {
                     worldPosition = nextPosition;
+                    previousWorldPosition = nextPosition;
                     interpolationStartPosition = nextPosition;
                     interpolationStartTime = Time.time;
                     gameObject.transform.position = nextPosition;
@@ -76,12 +83,16 @@ namespace SatelliteEdgeComputing.Visualization
                 }
                 else if (nextPosition != worldPosition)
                 {
+                    previousWorldPosition = worldPosition;
                     interpolationStartPosition = gameObject.transform.position;
                     interpolationStartTime = Time.time;
                     worldPosition = nextPosition;
+
+                    Vector3 inferredNormal = Vector3.Cross(previousWorldPosition.normalized, worldPosition.normalized);
+                    if (inferredNormal.sqrMagnitude > 0.000001f)
+                        orbitNormal = inferredNormal.normalized;
                 }
 
-                // 更新颜色
                 if (renderer != null)
                 {
                     Color statusColor = data.GetStatusColor();
@@ -92,177 +103,175 @@ namespace SatelliteEdgeComputing.Visualization
                     renderer.material.color = statusColor;
                 }
 
-                // 更新标签文本
                 if (label != null && labelText != null)
-                {
                     labelText.text = $"{data.name}\n负载: {data.LoadRate:P0}\n任务: {data.taskCount}";
-                }
-
-                // 更新轨道点
-                orbitPoints.Add(worldPosition);
-                if (orbitPoints.Count > 100) // 保留最近100个点
-                {
-                    orbitPoints.RemoveAt(0);
-                }
             }
 
-            public void UpdateOrbitLine(bool showOrbit, Material material, float width, Color color)
+            public void UpdateOrbitLine(bool showOrbit, float width, Color color, int segments, float refreshInterval, bool forceRefresh = false)
             {
                 if (orbitLine == null) return;
 
-                orbitLine.enabled = showOrbit && orbitPoints.Count > 1;
+                orbitLine.enabled = showOrbit && hasPosition;
                 if (!orbitLine.enabled) return;
 
-                orbitLine.positionCount = orbitPoints.Count;
-                orbitLine.SetPositions(orbitPoints.ToArray());
+                orbitLine.loop = true;
                 orbitLine.startColor = color;
                 orbitLine.endColor = color;
                 orbitLine.startWidth = width;
                 orbitLine.endWidth = width;
+
+                bool needsRefresh =
+                    forceRefresh ||
+                    orbitPositions == null ||
+                    orbitPositions.Length != segments ||
+                    Time.time - lastOrbitRefreshTime >= refreshInterval ||
+                    Vector3.Distance(lastOrbitCenterPosition, worldPosition) > Mathf.Max(1000f, worldPosition.magnitude * 0.001f);
+
+                if (!needsRefresh)
+                    return;
+
+                BuildOrbitPositions(segments);
+                orbitLine.positionCount = orbitPositions.Length;
+                orbitLine.SetPositions(orbitPositions);
+                lastOrbitRefreshTime = Time.time;
+                lastOrbitCenterPosition = worldPosition;
+            }
+
+            private void BuildOrbitPositions(int segments)
+            {
+                segments = Mathf.Max(12, segments);
+                if (orbitPositions == null || orbitPositions.Length != segments)
+                    orbitPositions = new Vector3[segments];
+
+                Vector3 radiusVector = worldPosition;
+                float radius = Mathf.Max(1f, radiusVector.magnitude);
+                Vector3 normal = orbitNormal.sqrMagnitude > 0.000001f ? orbitNormal.normalized : GetFallbackNormal(radiusVector);
+                Vector3 axisA = Vector3.ProjectOnPlane(radiusVector, normal);
+                if (axisA.sqrMagnitude < 0.000001f)
+                    axisA = Vector3.Cross(normal, Vector3.up);
+                if (axisA.sqrMagnitude < 0.000001f)
+                    axisA = Vector3.Cross(normal, Vector3.right);
+
+                axisA = axisA.normalized;
+                Vector3 axisB = Vector3.Cross(normal, axisA).normalized;
+
+                for (int i = 0; i < segments; i++)
+                {
+                    float angle = Mathf.PI * 2f * i / segments;
+                    orbitPositions[i] = (axisA * Mathf.Cos(angle) + axisB * Mathf.Sin(angle)) * radius;
+                }
+            }
+
+            private Vector3 GetFallbackNormal(Vector3 radiusVector)
+            {
+                Vector3 normal = Vector3.Cross(radiusVector.normalized, Vector3.up);
+                if (normal.sqrMagnitude < 0.000001f)
+                    normal = Vector3.Cross(radiusVector.normalized, Vector3.right);
+                return normal.normalized;
             }
         }
 
-        /// <summary>
-        /// 初始化
-        /// </summary>
         public void Initialize(EarthRenderer earthRenderer, Transform canvasTransform)
         {
             this.earthRenderer = earthRenderer;
             this.canvasTransform = canvasTransform;
 
-            // 创建默认卫星预制体（如果未提供）
             if (satellitePrefab == null)
-            {
                 satellitePrefab = CreateDefaultSatellitePrefab();
-            }
 
-            // 创建默认标签预制体（如果未提供）
             if (labelPrefab == null && showLabels)
-            {
                 labelPrefab = CreateDefaultLabelPrefab();
-            }
 
-            // 创建默认状态指示器预制体（如果未提供）
             if (statusIndicatorPrefab == null && showStatusIndicators)
-            {
                 statusIndicatorPrefab = CreateDefaultStatusIndicatorPrefab();
-            }
 
-            Debug.Log("Satellite visualizer initialized.");
+            Log("Satellite visualizer initialized.");
         }
 
-        /// <summary>
-        /// 更新卫星可视化
-        /// </summary>
         public void UpdateSatellites(List<Core.Satellite> satellites)
         {
-            Debug.Log($"[SatelliteVisualizer] UpdateSatellites被调用, 卫星数量={satellites?.Count ?? 0}, earthRenderer={(earthRenderer != null ? "有效" : "null")}");
+            Log($"UpdateSatellites: count={satellites?.Count ?? 0}");
 
-            if (satellites == null || satellites.Count == 0)
+            if (satellites == null)
             {
-                Debug.LogWarning("[SatelliteVisualizer] UpdateSatellites: 卫星列表为空");
+                ClearAll();
                 return;
             }
 
-            // 移除不存在的卫星
-            List<int> toRemove = new List<int>();
+            var satelliteIds = new HashSet<int>();
+            foreach (var satellite in satellites)
+            {
+                if (satellite != null)
+                    satelliteIds.Add(satellite.id);
+            }
+
+            var toRemove = new List<int>();
             foreach (var kvp in satelliteInstances)
             {
-                if (!satellites.Exists(s => s.id == kvp.Key))
-                {
+                if (!satelliteIds.Contains(kvp.Key))
                     toRemove.Add(kvp.Key);
-                }
             }
 
             foreach (int id in toRemove)
-            {
                 DestroySatelliteInstance(id);
-            }
 
-            // 更新或创建卫星实例
-            int updated = 0, created = 0;
+            bool compactMode = satellites.Count >= autoHideLabelsThreshold;
+            bool highLoadMode = satellites.Count >= highLoadOrbitThreshold;
+            int selectedOrbitSegments = highLoadMode ? highLoadOrbitSegments : orbitSegments;
+
+            int updated = 0;
+            int created = 0;
             foreach (var satellite in satellites)
             {
-                if (satelliteInstances.ContainsKey(satellite.id))
+                if (satellite == null)
+                    continue;
+
+                if (satelliteInstances.TryGetValue(satellite.id, out var instance))
                 {
-                    // 更新现有实例
-                    var instance = satelliteInstances[satellite.id];
                     instance.data = satellite;
-                    instance.UpdateVisualization(earthRenderer, satelliteScale,
-                        idleColor, busyColor, overloadedColor);
-                    instance.UpdateOrbitLine(showOrbit, orbitMaterial, orbitWidth, orbitColor);
+                    instance.UpdateVisualization(earthRenderer, idleColor, busyColor, overloadedColor);
+                    instance.UpdateOrbitLine(showOrbit, orbitWidth, orbitColor, selectedOrbitSegments, orbitRefreshInterval);
                     updated++;
                 }
                 else
                 {
-                    // 创建新实例
-                    CreateSatelliteInstance(satellite);
+                    CreateSatelliteInstance(satellite, compactMode, selectedOrbitSegments);
                     created++;
                 }
             }
-            Debug.Log($"[SatelliteVisualizer] UpdateSatellites完成: 更新{updated}个, 新建{created}个");
+
+            Log($"UpdateSatellites done: updated={updated}, created={created}");
         }
 
-        /// <summary>
-        /// 创建卫星实例
-        /// </summary>
-        private void CreateSatelliteInstance(Core.Satellite satellite)
+        private void CreateSatelliteInstance(Core.Satellite satellite, bool compactMode, int selectedOrbitSegments)
         {
             if (earthRenderer == null)
             {
-                Debug.LogWarning("[SatelliteVisualizer] CreateSatelliteInstance: EarthRenderer is null, cannot create satellite instance.");
+                Debug.LogWarning("EarthRenderer is null, cannot create satellite instance.");
                 return;
             }
 
-            Debug.Log($"[SatelliteVisualizer] CreateSatelliteInstance: 创建卫星 {satellite.name}, prefab={(satellitePrefab != null ? "有效" : "null")}");
-
-            // 创建卫星游戏对象
             GameObject satelliteObj = Instantiate(satellitePrefab, transform);
             satelliteObj.name = $"Satellite_{satellite.id}_{satellite.name}";
-            satelliteObj.SetActive(true);  // 激活对象（预制体默认禁用）
+            satelliteObj.SetActive(true);
 
-            // 设置位置
             float earthRadius = earthRenderer.GetEarthRadius();
             Vector3 position = satellite.GetWorldPosition(earthRadius);
             satelliteObj.transform.position = position;
             satelliteObj.transform.localScale = Vector3.one * satelliteScale;
 
-            // 调试信息
-            Debug.Log($"[SatelliteVisualizer] 卫星 {satellite.name}: 地球半径={earthRadius}, 卫星高度={satellite.altitude}, 位置={position}, 缩放={satelliteScale}");
-
-#if UNITY_EDITOR && DEBUG_SATELLITE_POSITION
-            // 临时调试：创建一个大的红色球体来验证位置
-            GameObject debugSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            debugSphere.name = $"Debug_{satellite.name}";
-            debugSphere.transform.position = position;
-            debugSphere.transform.localScale = Vector3.one * 500000f; // 更大的缩放以便可见
-            var debugRenderer = debugSphere.GetComponent<Renderer>();
-            if (debugRenderer != null)
-            {
-                debugRenderer.material.color = Color.red;
-            }
-            Debug.Log($"[SatelliteVisualizer] 创建调试球体在位置 {position}, 缩放 500000");
-#endif
-
-            // 获取渲染器
             Renderer renderer = satelliteObj.GetComponent<Renderer>();
             if (renderer == null)
-            {
                 renderer = satelliteObj.GetComponentInChildren<Renderer>();
-            }
 
-            // 创建标签
             GameObject label = null;
             RectTransform labelRect = null;
             Text labelText = null;
-            if (showLabels && labelPrefab != null && canvasTransform != null)
+            bool visibleLabels = showLabels && !compactMode && labelPrefab != null && canvasTransform != null;
+            if (visibleLabels)
             {
                 label = Instantiate(labelPrefab, canvasTransform);
-                labelRect = label.GetComponent<RectTransform>();
-                if (labelRect == null)
-                {
-                    labelRect = label.AddComponent<RectTransform>();
-                }
+                labelRect = label.GetComponent<RectTransform>() ?? label.AddComponent<RectTransform>();
                 labelText = label.GetComponentInChildren<Text>();
                 if (labelText != null)
                 {
@@ -273,44 +282,30 @@ namespace SatelliteEdgeComputing.Visualization
                 }
             }
 
-            // 创建状态指示器
             GameObject statusIndicator = null;
-            if (showStatusIndicators && statusIndicatorPrefab != null && canvasTransform != null)
+            if (showStatusIndicators && !compactMode && statusIndicatorPrefab != null && canvasTransform != null)
             {
                 statusIndicator = Instantiate(statusIndicatorPrefab, canvasTransform);
-                var indicatorRect = statusIndicator.GetComponent<RectTransform>();
-                if (indicatorRect == null)
-                {
+                if (statusIndicator.GetComponent<RectTransform>() == null)
                     statusIndicator.AddComponent<RectTransform>();
-                }
             }
 
-            // 创建轨道线
             LineRenderer orbitLine = null;
             if (showOrbit)
             {
                 GameObject orbitObj = new GameObject($"Orbit_{satellite.id}");
-                orbitObj.transform.SetParent(transform);
+                orbitObj.transform.SetParent(transform, false);
                 orbitLine = orbitObj.AddComponent<LineRenderer>();
-
-                if (orbitMaterial != null)
-                {
-                    orbitLine.material = orbitMaterial;
-                }
-                else
-                {
-                    orbitLine.material = new Material(Shader.Find("Sprites/Default"));
-                }
-
+                orbitLine.material = orbitMaterial != null ? orbitMaterial : new Material(Shader.Find("Sprites/Default"));
+                orbitLine.useWorldSpace = true;
+                orbitLine.positionCount = 0;
+                orbitLine.loop = true;
                 orbitLine.startColor = orbitColor;
                 orbitLine.endColor = orbitColor;
                 orbitLine.startWidth = orbitWidth;
                 orbitLine.endWidth = orbitWidth;
-                orbitLine.useWorldSpace = true;
-                orbitLine.positionCount = 0;
             }
 
-            // 创建实例
             var instance = new SatelliteInstance
             {
                 data = satellite,
@@ -321,48 +316,28 @@ namespace SatelliteEdgeComputing.Visualization
                 labelText = labelText,
                 statusIndicator = statusIndicator,
                 orbitLine = orbitLine,
-                worldPosition = position
+                worldPosition = position,
+                previousWorldPosition = position,
+                orbitNormal = Vector3.Cross(position.normalized, Vector3.up).sqrMagnitude > 0.000001f
+                    ? Vector3.Cross(position.normalized, Vector3.up).normalized
+                    : Vector3.Cross(position.normalized, Vector3.right).normalized
             };
 
             satelliteInstances[satellite.id] = instance;
-            instance.UpdateVisualization(earthRenderer, satelliteScale, idleColor, busyColor, overloadedColor);
+            instance.UpdateVisualization(earthRenderer, idleColor, busyColor, overloadedColor);
+            instance.UpdateOrbitLine(showOrbit, orbitWidth, orbitColor, selectedOrbitSegments, orbitRefreshInterval, true);
         }
 
-        /// <summary>
-        /// 销毁卫星实例
-        /// </summary>
-        private void DestroySatelliteInstance(int satelliteId)
-        {
-            if (satelliteInstances.TryGetValue(satelliteId, out var instance))
-            {
-                if (instance.gameObject != null)
-                    Destroy(instance.gameObject);
-                if (instance.label != null)
-                    Destroy(instance.label);
-                if (instance.statusIndicator != null)
-                    Destroy(instance.statusIndicator);
-                if (instance.orbitLine != null && instance.orbitLine.gameObject != null)
-                    Destroy(instance.orbitLine.gameObject);
-
-                satelliteInstances.Remove(satelliteId);
-            }
-        }
-
-        /// <summary>
-        /// 创建默认卫星预制体
-        /// </summary>
         private GameObject CreateDefaultSatellitePrefab()
         {
             GameObject prefab = new GameObject("DefaultSatellitePrefab");
             prefab.SetActive(false);
 
-            // 主体（长方体）
             GameObject body = GameObject.CreatePrimitive(PrimitiveType.Cube);
             body.transform.SetParent(prefab.transform);
             body.transform.localScale = new Vector3(0.5f, 1f, 0.5f);
             body.transform.localPosition = Vector3.zero;
 
-            // 太阳能板（两个扁平的长方体）
             GameObject solarPanel1 = GameObject.CreatePrimitive(PrimitiveType.Cube);
             solarPanel1.transform.SetParent(prefab.transform);
             solarPanel1.transform.localScale = new Vector3(2f, 0.1f, 1f);
@@ -373,44 +348,34 @@ namespace SatelliteEdgeComputing.Visualization
             solarPanel2.transform.localScale = new Vector3(2f, 0.1f, 1f);
             solarPanel2.transform.localPosition = new Vector3(-1f, 0, 0);
 
-            // 天线（圆柱体）
             GameObject antenna = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             antenna.transform.SetParent(prefab.transform);
             antenna.transform.localScale = new Vector3(0.1f, 0.5f, 0.1f);
             antenna.transform.localPosition = new Vector3(0, 0.5f, 0);
             antenna.transform.Rotate(90, 0, 0);
 
-            // 设置材质
             var material = new Material(Shader.Find("Standard"));
             material.color = Color.gray;
             foreach (var renderer in prefab.GetComponentsInChildren<Renderer>())
-            {
                 renderer.material = material;
-            }
 
             return prefab;
         }
 
-        /// <summary>
-        /// 创建默认标签预制体
-        /// </summary>
         private GameObject CreateDefaultLabelPrefab()
         {
             GameObject prefab = new GameObject("LabelPrefab");
-
-            // 根对象需要 RectTransform
             RectTransform rootRect = prefab.AddComponent<RectTransform>();
             rootRect.sizeDelta = new Vector2(200, 50);
-            rootRect.pivot = new Vector2(0.5f, 0f); // 锚点在底部中心
+            rootRect.pivot = new Vector2(0.5f, 0f);
 
             GameObject textObj = new GameObject("Text");
-            textObj.transform.SetParent(prefab.transform);
+            textObj.transform.SetParent(prefab.transform, false);
 
             RectTransform rectTransform = textObj.AddComponent<RectTransform>();
             rectTransform.anchorMin = Vector2.zero;
             rectTransform.anchorMax = Vector2.one;
             rectTransform.sizeDelta = Vector2.zero;
-            rectTransform.anchoredPosition = Vector2.zero;
 
             Text text = textObj.AddComponent<Text>();
             text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -423,19 +388,13 @@ namespace SatelliteEdgeComputing.Visualization
             return prefab;
         }
 
-        /// <summary>
-        /// 创建默认状态指示器预制体
-        /// </summary>
         private GameObject CreateDefaultStatusIndicatorPrefab()
         {
             GameObject prefab = new GameObject("StatusIndicatorPrefab");
-
-            // 根对象需要 RectTransform
             RectTransform rootRect = prefab.AddComponent<RectTransform>();
             rootRect.sizeDelta = new Vector2(20, 20);
             rootRect.pivot = new Vector2(0.5f, 0.5f);
 
-            // 使用 UI Image 而不是 3D Quad
             GameObject icon = new GameObject("Icon");
             icon.transform.SetParent(prefab.transform, false);
 
@@ -444,79 +403,82 @@ namespace SatelliteEdgeComputing.Visualization
             iconRect.anchorMax = Vector2.one;
             iconRect.sizeDelta = Vector2.zero;
 
-            UnityEngine.UI.Image image = icon.AddComponent<UnityEngine.UI.Image>();
+            Image image = icon.AddComponent<Image>();
             image.color = Color.white;
 
             return prefab;
         }
 
-        /// <summary>
-        /// 显示/隐藏标签
-        /// </summary>
         public void SetLabelsVisible(bool visible)
         {
             showLabels = visible;
             foreach (var instance in satelliteInstances.Values)
             {
                 if (instance.label != null)
-                {
                     instance.label.SetActive(visible);
-                }
             }
         }
 
-        /// <summary>
-        /// 显示/隐藏状态指示器
-        /// </summary>
         public void SetStatusIndicatorsVisible(bool visible)
         {
             showStatusIndicators = visible;
             foreach (var instance in satelliteInstances.Values)
             {
                 if (instance.statusIndicator != null)
-                {
                     instance.statusIndicator.SetActive(visible);
-                }
             }
         }
 
-        /// <summary>
-        /// 显示/隐藏轨道线
-        /// </summary>
         public void SetOrbitsVisible(bool visible)
         {
             showOrbit = visible;
             foreach (var instance in satelliteInstances.Values)
             {
                 if (instance.orbitLine != null)
-                {
                     instance.orbitLine.enabled = visible;
-                }
             }
         }
 
-        /// <summary>
-        /// 清除所有卫星
-        /// </summary>
         public void ClearAll()
         {
             foreach (var id in new List<int>(satelliteInstances.Keys))
-            {
                 DestroySatelliteInstance(id);
-            }
+
             satelliteInstances.Clear();
+        }
+
+        private void DestroySatelliteInstance(int satelliteId)
+        {
+            if (!satelliteInstances.TryGetValue(satelliteId, out var instance))
+                return;
+
+            if (instance.gameObject != null)
+                Destroy(instance.gameObject);
+            if (instance.label != null)
+                Destroy(instance.label);
+            if (instance.statusIndicator != null)
+                Destroy(instance.statusIndicator);
+            if (instance.orbitLine != null && instance.orbitLine.gameObject != null)
+                Destroy(instance.orbitLine.gameObject);
+
+            satelliteInstances.Remove(satelliteId);
+        }
+
+        private void Log(string message)
+        {
+            if (verboseLogging)
+                Debug.Log($"[SatelliteVisualizer] {message}");
         }
 
         void Update()
         {
-            // 确保相机存在
-            if (Camera.main == null) return;
+            if (Camera.main == null)
+                return;
 
             Camera cam = Camera.main;
             RectTransform canvasRect = canvasTransform as RectTransform;
             const float interpolationDuration = 0.2f;
 
-            // 更新标签位置（将世界坐标转换为屏幕坐标）
             foreach (var instance in satelliteInstances.Values)
             {
                 if (instance.gameObject != null)
@@ -531,32 +493,21 @@ namespace SatelliteEdgeComputing.Visualization
                     instance.gameObject.transform.Rotate(90, 0, 0);
                 }
 
-                Vector3 currentPosition = instance.gameObject != null
-                    ? instance.gameObject.transform.position
-                    : instance.worldPosition;
+                Vector3 currentPosition = instance.gameObject != null ? instance.gameObject.transform.position : instance.worldPosition;
 
                 if (canvasRect != null && instance.label != null && instance.labelRect != null)
                 {
-                    // 将世界坐标转换为屏幕坐标
                     Vector3 screenPos = cam.WorldToScreenPoint(currentPosition);
-
-                    // 检查是否在相机前方（z > 0）
                     if (screenPos.z > 0 && screenPos.x >= 0 && screenPos.x <= Screen.width &&
                         screenPos.y >= 0 && screenPos.y <= Screen.height)
                     {
                         instance.label.SetActive(true);
-
-                        // 将屏幕坐标转换为 Canvas 局部坐标
                         Vector2 localPos;
-                        if (RectTransformUtility.ScreenPointToLocalPointInRectangle(
-                            canvasRect, screenPos, null, out localPos))
-                        {
-                            instance.labelRect.anchoredPosition = localPos + Vector2.up * 30f;
-                        }
+                        if (RectTransformUtility.ScreenPointToLocalPointInRectangle(canvasRect, screenPos, null, out localPos))
+                            instance.labelRect.anchoredPosition = localPos + Vector2.up * labelOffset;
                     }
                     else
                     {
-                        // 在相机背后或屏幕外时隐藏标签
                         instance.label.SetActive(false);
                     }
                 }
@@ -569,14 +520,11 @@ namespace SatelliteEdgeComputing.Visualization
                     {
                         instance.statusIndicator.SetActive(true);
                         var rect = instance.statusIndicator.GetComponent<RectTransform>();
-                        if (rect != null && canvasRect != null)
+                        if (rect != null)
                         {
                             Vector2 localPos;
-                            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(
-                                canvasRect, screenPos, null, out localPos))
-                            {
+                            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(canvasRect, screenPos, null, out localPos))
                                 rect.anchoredPosition = localPos + Vector2.up * 50f;
-                            }
                         }
                     }
                     else

@@ -4,37 +4,56 @@ using UnityEngine;
 namespace SatelliteEdgeComputing.Visualization
 {
     /// <summary>
-    /// 通信链路可视化器
+    /// Communication link visualizer.
     /// </summary>
     public class LinkVisualizer : MonoBehaviour
     {
-        [Header("链路设置")]
+        [Header("Link Settings")]
         [SerializeField] private bool showLinks = true;
         [SerializeField] private Material linkMaterial;
-        [SerializeField] private float linkWidth = 200f;
-        [SerializeField] private Color activeLinkColor = new Color(0, 1, 0, 0.8f); // 绿色
-        [SerializeField] private Color inactiveLinkColor = new Color(1, 0, 0, 0.3f); // 红色
-        [SerializeField] private Color potentialLinkColor = new Color(1, 1, 0, 0.2f); // 黄色
-        [SerializeField] private float maxLinkDistance = 2000000f; // 最大通信距离（米）
+        [SerializeField] private float linkWidth = 350f;
+        [SerializeField] private float minVisibleLinkWidth = 80f;
+        [SerializeField] private Color activeLinkColor = new Color(0f, 1f, 0.15f, 0.9f);
+        [SerializeField] private Color inactiveLinkColor = new Color(1f, 0.15f, 0.05f, 0.25f);
+        [SerializeField] private Color potentialLinkColor = new Color(1f, 0.9f, 0f, 0.5f);
+        [SerializeField] private float maxLinkDistance = 5000000f;
+        [SerializeField] private bool requireLineOfSight = true;
 
-        [Header("粒子效果")]
-        [SerializeField] private bool useParticles = true;
+        [Header("Particles")]
+        [SerializeField] private bool useParticles = false;
         [SerializeField] private ParticleSystem linkParticlePrefab;
         [SerializeField] private float particleSpeed = 10f;
         [SerializeField] private float particleEmissionRate = 5f;
 
-        [Header("性能优化")]
+        [Header("Performance")]
         [SerializeField] private int maxLinks = 50;
-        [SerializeField] private float updateInterval = 0.5f; // 更新间隔（秒）
+        [SerializeField] private float updateInterval = 0.5f;
 
-        // 链路实例字典
-        private Dictionary<string, LinkInstance> linkInstances = new Dictionary<string, LinkInstance>();
+        private readonly Dictionary<string, LinkInstance> linkInstances = new Dictionary<string, LinkInstance>();
+        private readonly List<LinkCandidate> candidates = new List<LinkCandidate>();
+        private readonly HashSet<string> desiredLinkIds = new HashSet<string>();
+        private readonly List<string> linksToRemove = new List<string>();
         private EarthRenderer earthRenderer;
-        private float lastUpdateTime = 0f;
+        private float lastUpdateTime = -999f;
+        private int activeLinkCount;
+        private int visibleLinkCount;
 
-        /// <summary>
-        /// 链路实例封装
-        /// </summary>
+        public int ActiveLinkCount => activeLinkCount;
+        public int VisibleLinkCount => visibleLinkCount;
+
+        private struct LinkCandidate
+        {
+            public string linkId;
+            public Core.Satellite satellite;
+            public Core.GroundStation station;
+            public Vector3 satellitePosition;
+            public Vector3 stationPosition;
+            public float distance;
+            public float strength;
+            public bool isActive;
+            public bool isPotential;
+        }
+
         private class LinkInstance
         {
             public string linkId;
@@ -42,318 +61,282 @@ namespace SatelliteEdgeComputing.Visualization
             public int groundStationId;
             public bool isActive;
             public bool isPotential;
-            public float strength; // 信号强度 0-1
+            public float strength;
             public GameObject gameObject;
             public LineRenderer lineRenderer;
             public ParticleSystem particleSystem;
 
             public void UpdateVisualization(Vector3 satellitePos, Vector3 groundStationPos,
-                bool showLinks, float width,
+                bool showLinks, float width, float minWidth,
                 Color activeColor, Color inactiveColor, Color potentialColor,
-                bool useParticles, float particleSpeed, float maxDistance)
+                bool useParticles, float particleSpeed)
             {
                 if (gameObject == null || lineRenderer == null) return;
 
                 lineRenderer.enabled = showLinks;
                 if (!showLinks) return;
 
-                // 设置位置
                 lineRenderer.SetPosition(0, satellitePos);
                 lineRenderer.SetPosition(1, groundStationPos);
 
-                // 计算距离和信号强度
-                float distance = Vector3.Distance(satellitePos, groundStationPos);
-                strength = Mathf.Clamp01(1 - (distance / maxDistance));
-
-                // 设置颜色和宽度
-                Color linkColor;
+                Color linkColor = inactiveColor;
                 if (isActive)
-                {
-                    linkColor = Color.Lerp(inactiveColor, activeColor, strength);
-                }
+                    linkColor = Color.Lerp(potentialColor, activeColor, Mathf.Clamp01(strength));
                 else if (isPotential)
-                {
-                    linkColor = Color.Lerp(inactiveColor, potentialColor, strength * 0.5f);
-                }
-                else
-                {
-                    linkColor = inactiveColor;
-                }
+                    linkColor = Color.Lerp(inactiveColor, potentialColor, Mathf.Clamp01(strength));
 
+                float visibleWidth = Mathf.Max(minWidth, width * Mathf.Clamp01(strength));
                 lineRenderer.startColor = linkColor;
                 lineRenderer.endColor = linkColor;
-                lineRenderer.startWidth = width * strength;
-                lineRenderer.endWidth = width * strength * 0.5f;
+                lineRenderer.startWidth = visibleWidth;
+                lineRenderer.endWidth = Mathf.Max(minWidth * 0.75f, visibleWidth * 0.65f);
 
-                // 更新粒子系统
-                if (particleSystem != null)
+                if (particleSystem == null) return;
+
+                bool particlesVisible = useParticles && isActive && strength > 0.3f;
+                particleSystem.gameObject.SetActive(particlesVisible);
+                if (!particlesVisible)
                 {
-                    particleSystem.gameObject.SetActive(useParticles && isActive && strength > 0.3f);
-
                     if (particleSystem.isPlaying)
-                    {
-                        // 设置粒子方向
-                        var shape = particleSystem.shape;
-                        shape.position = satellitePos;
-                        shape.rotation = Quaternion.LookRotation(groundStationPos - satellitePos).eulerAngles;
-
-                        // 设置粒子速度
-                        var main = particleSystem.main;
-                        main.startSpeed = particleSpeed * strength;
-
-                        // 设置粒子颜色
-                        var colorOverLifetime = particleSystem.colorOverLifetime;
-                        Gradient gradient = new Gradient();
-                        gradient.SetKeys(
-                            new GradientColorKey[] { new GradientColorKey(activeColor, 0f), new GradientColorKey(activeColor, 1f) },
-                            new GradientAlphaKey[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) }
-                        );
-                        colorOverLifetime.color = gradient;
-                    }
+                        particleSystem.Stop();
+                    return;
                 }
+
+                if (!particleSystem.isPlaying)
+                    particleSystem.Play();
+
+                particleSystem.transform.position = satellitePos;
+                var shape = particleSystem.shape;
+                shape.rotation = Quaternion.LookRotation(groundStationPos - satellitePos).eulerAngles;
+
+                var main = particleSystem.main;
+                main.startSpeed = particleSpeed * Mathf.Clamp01(strength);
             }
         }
 
-        /// <summary>
-        /// 初始化
-        /// </summary>
         public void Initialize(EarthRenderer earthRenderer)
         {
             this.earthRenderer = earthRenderer;
 
-            // 创建默认粒子系统预制体（如果未提供）
             if (linkParticlePrefab == null && useParticles)
-            {
                 linkParticlePrefab = CreateDefaultParticlePrefab();
-            }
 
             Debug.Log("Link visualizer initialized.");
         }
 
-        /// <summary>
-        /// 更新通信链路
-        /// </summary>
         public void UpdateLinks(List<Core.Satellite> satellites, List<Core.GroundStation> groundStations)
         {
-            if (earthRenderer == null) return;
-
-            // 限制更新频率
-            if (Time.time - lastUpdateTime < updateInterval)
+            if (earthRenderer == null || satellites == null || groundStations == null)
                 return;
+
+            if (Time.time - lastUpdateTime < updateInterval)
+            {
+                ApplyVisibilityOnly();
+                return;
+            }
 
             lastUpdateTime = Time.time;
-
-            // 清理不存在的链路
-            List<string> toRemove = new List<string>();
-            foreach (var kvp in linkInstances)
-            {
-                bool satelliteExists = satellites.Exists(s => s.id == kvp.Value.satelliteId);
-                bool stationExists = groundStations.Exists(g => g.id == kvp.Value.groundStationId);
-
-                if (!satelliteExists || !stationExists)
-                {
-                    toRemove.Add(kvp.Key);
-                }
-            }
-
-            foreach (string linkId in toRemove)
-            {
-                DestroyLinkInstance(linkId);
-            }
-
-            // 限制链路数量
-            if (linkInstances.Count >= maxLinks)
-                return;
-
-            // 计算新的链路
-            foreach (var satellite in satellites)
-            {
-                foreach (var station in groundStations)
-                {
-                    string linkId = $"{satellite.id}_{station.id}";
-
-                    // 如果链路已存在，更新它
-                    if (linkInstances.ContainsKey(linkId))
-                    {
-                        UpdateLinkInstance(linkId, satellite, station);
-                    }
-                    else if (linkInstances.Count < maxLinks) // 创建新链路
-                    {
-                        CreateLinkInstance(linkId, satellite, station);
-                    }
-                }
-            }
-
-            // 更新所有链路的可视化
-            float earthRadius = earthRenderer.GetEarthRadius();
-            foreach (var kvp in linkInstances)
-            {
-                var instance = kvp.Value;
-                var satellite = satellites.Find(s => s.id == instance.satelliteId);
-                var station = groundStations.Find(g => g.id == instance.groundStationId);
-
-                if (satellite != null && station != null)
-                {
-                    Vector3 satPos = satellite.GetWorldPosition(earthRadius);
-                    Vector3 stationPos = station.GetWorldPosition(earthRadius);
-
-                    instance.UpdateVisualization(satPos, stationPos,
-                        showLinks, linkWidth,
-                        activeLinkColor, inactiveLinkColor, potentialLinkColor,
-                        useParticles, particleSpeed, maxLinkDistance);
-                }
-            }
+            BuildCandidates(satellites, groundStations);
+            ApplyTopCandidates();
         }
 
-        /// <summary>
-        /// 创建链路实例
-        /// </summary>
-        private void CreateLinkInstance(string linkId, Core.Satellite satellite, Core.GroundStation station)
+        private void BuildCandidates(List<Core.Satellite> satellites, List<Core.GroundStation> groundStations)
         {
-            if (earthRenderer == null) return;
+            candidates.Clear();
+            float earthRadius = earthRenderer.GetEarthRadius();
 
-            // 计算链路状态
-            bool isActive = CheckLinkActive(satellite, station);
-            bool isPotential = CheckLinkPotential(satellite, station);
+            foreach (var satellite in satellites)
+            {
+                if (satellite == null)
+                    continue;
 
-            // 创建游戏对象
-            GameObject linkObj = new GameObject($"Link_{linkId}");
-            linkObj.transform.SetParent(transform);
+                Vector3 satellitePos = satellite.GetWorldPosition(earthRadius);
 
-            // 创建LineRenderer
+                foreach (var station in groundStations)
+                {
+                    if (station == null)
+                        continue;
+
+                    Vector3 stationPos = GetGroundStationWorldPosition(station, earthRadius);
+                    float distance = Vector3.Distance(satellitePos, stationPos);
+                    bool isPotential = distance <= maxLinkDistance * 1.2f;
+                    if (!isPotential)
+                        continue;
+
+                    if (requireLineOfSight && !HasLineOfSight(satellitePos, stationPos, earthRadius))
+                        continue;
+
+                    float strength = Mathf.Clamp01(1f - (distance / Mathf.Max(1f, maxLinkDistance * 1.2f)));
+                    bool isActive = distance <= maxLinkDistance && satellite.LoadRate < 0.8f;
+
+                    candidates.Add(new LinkCandidate
+                    {
+                        linkId = $"{satellite.id}_{station.id}",
+                        satellite = satellite,
+                        station = station,
+                        satellitePosition = satellitePos,
+                        stationPosition = stationPos,
+                        distance = distance,
+                        strength = strength,
+                        isActive = isActive,
+                        isPotential = isPotential
+                    });
+                }
+            }
+
+            candidates.Sort((left, right) =>
+            {
+                int activeCompare = right.isActive.CompareTo(left.isActive);
+                if (activeCompare != 0) return activeCompare;
+
+                int strengthCompare = right.strength.CompareTo(left.strength);
+                if (strengthCompare != 0) return strengthCompare;
+
+                return left.distance.CompareTo(right.distance);
+            });
+        }
+
+        private void ApplyTopCandidates()
+        {
+            desiredLinkIds.Clear();
+            activeLinkCount = 0;
+            visibleLinkCount = 0;
+
+            int count = Mathf.Min(maxLinks, candidates.Count);
+            for (int i = 0; i < count; i++)
+            {
+                LinkCandidate candidate = candidates[i];
+                desiredLinkIds.Add(candidate.linkId);
+
+                LinkInstance instance = GetOrCreateLinkInstance(candidate);
+                instance.isActive = candidate.isActive;
+                instance.isPotential = candidate.isPotential;
+                instance.strength = candidate.strength;
+
+                if (candidate.isActive)
+                    activeLinkCount++;
+                visibleLinkCount++;
+
+                instance.UpdateVisualization(
+                    candidate.satellitePosition,
+                    candidate.stationPosition,
+                    showLinks,
+                    linkWidth,
+                    minVisibleLinkWidth,
+                    activeLinkColor,
+                    inactiveLinkColor,
+                    potentialLinkColor,
+                    useParticles,
+                    particleSpeed);
+            }
+
+            linksToRemove.Clear();
+            foreach (var kvp in linkInstances)
+            {
+                if (!desiredLinkIds.Contains(kvp.Key))
+                    linksToRemove.Add(kvp.Key);
+            }
+
+            foreach (string linkId in linksToRemove)
+                DestroyLinkInstance(linkId);
+        }
+
+        private LinkInstance GetOrCreateLinkInstance(LinkCandidate candidate)
+        {
+            if (linkInstances.TryGetValue(candidate.linkId, out var instance))
+                return instance;
+
+            GameObject linkObj = new GameObject($"Link_{candidate.linkId}");
+            linkObj.transform.SetParent(transform, false);
+
             LineRenderer lineRenderer = linkObj.AddComponent<LineRenderer>();
             lineRenderer.positionCount = 2;
             lineRenderer.useWorldSpace = true;
+            lineRenderer.material = linkMaterial != null
+                ? linkMaterial
+                : new Material(Shader.Find("Sprites/Default"));
 
-            if (linkMaterial != null)
-            {
-                lineRenderer.material = linkMaterial;
-            }
-            else
-            {
-                lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
-            }
-
-            // 创建粒子系统（如果需要）
             ParticleSystem particleSystem = null;
-            if (useParticles && linkParticlePrefab != null)
+            if (useParticles)
             {
+                if (linkParticlePrefab == null)
+                    linkParticlePrefab = CreateDefaultParticlePrefab();
+
                 particleSystem = Instantiate(linkParticlePrefab, linkObj.transform);
-                particleSystem.transform.position = satellite.GetWorldPosition(earthRenderer.GetEarthRadius());
-
-                // 配置粒子系统
-                var main = particleSystem.main;
-                main.startSpeed = particleSpeed;
-                main.startLifetime = 5f;
-
-                var emission = particleSystem.emission;
-                emission.rateOverTime = particleEmissionRate;
-
-                var shape = particleSystem.shape;
-                shape.shapeType = ParticleSystemShapeType.Cone;
-                shape.angle = 5f;
-
                 particleSystem.Stop();
-                if (isActive)
-                {
-                    particleSystem.Play();
-                }
             }
 
-            // 创建实例
-            var instance = new LinkInstance
+            instance = new LinkInstance
             {
-                linkId = linkId,
-                satelliteId = satellite.id,
-                groundStationId = station.id,
-                isActive = isActive,
-                isPotential = isPotential,
-                strength = 1f,
+                linkId = candidate.linkId,
+                satelliteId = candidate.satellite.id,
+                groundStationId = candidate.station.id,
                 gameObject = linkObj,
                 lineRenderer = lineRenderer,
                 particleSystem = particleSystem
             };
 
-            linkInstances[linkId] = instance;
+            linkInstances[candidate.linkId] = instance;
+            return instance;
         }
 
-        /// <summary>
-        /// 更新链路实例状态
-        /// </summary>
-        private void UpdateLinkInstance(string linkId, Core.Satellite satellite, Core.GroundStation station)
+        private Vector3 GetGroundStationWorldPosition(Core.GroundStation station, float earthRadius)
         {
-            if (linkInstances.TryGetValue(linkId, out var instance))
-            {
-                instance.isActive = CheckLinkActive(satellite, station);
-                instance.isPotential = CheckLinkPotential(satellite, station);
+            Vector3 localPosition = station.GetWorldPosition(earthRadius);
+            Transform earthTransform = earthRenderer != null ? earthRenderer.EarthContainerTransform : null;
+            return earthTransform != null ? earthTransform.TransformPoint(localPosition) : localPosition;
+        }
 
-                // 控制粒子系统
+        private bool HasLineOfSight(Vector3 satellitePos, Vector3 stationPos, float earthRadius)
+        {
+            Vector3 stationNormal = stationPos.normalized;
+            Vector3 toSatellite = (satellitePos - stationPos).normalized;
+            if (Vector3.Dot(stationNormal, toSatellite) <= 0f)
+                return false;
+
+            Vector3 closestPoint = ClosestPointOnSegment(Vector3.zero, stationPos, satellitePos);
+            return closestPoint.magnitude >= earthRadius * 0.98f;
+        }
+
+        private Vector3 ClosestPointOnSegment(Vector3 point, Vector3 start, Vector3 end)
+        {
+            Vector3 segment = end - start;
+            float lengthSquared = segment.sqrMagnitude;
+            if (lengthSquared <= Mathf.Epsilon)
+                return start;
+
+            float t = Mathf.Clamp01(Vector3.Dot(point - start, segment) / lengthSquared);
+            return start + segment * t;
+        }
+
+        private void ApplyVisibilityOnly()
+        {
+            foreach (var instance in linkInstances.Values)
+            {
+                if (instance.lineRenderer != null)
+                    instance.lineRenderer.enabled = showLinks;
+
                 if (instance.particleSystem != null)
-                {
-                    if (instance.isActive && !instance.particleSystem.isPlaying)
-                    {
-                        instance.particleSystem.Play();
-                    }
-                    else if (!instance.isActive && instance.particleSystem.isPlaying)
-                    {
-                        instance.particleSystem.Stop();
-                    }
-                }
+                    instance.particleSystem.gameObject.SetActive(showLinks && useParticles && instance.isActive);
             }
         }
 
-        /// <summary>
-        /// 销毁链路实例
-        /// </summary>
         private void DestroyLinkInstance(string linkId)
         {
-            if (linkInstances.TryGetValue(linkId, out var instance))
-            {
-                if (instance.gameObject != null)
-                    Destroy(instance.gameObject);
+            if (!linkInstances.TryGetValue(linkId, out var instance))
+                return;
 
-                linkInstances.Remove(linkId);
-            }
+            if (instance.gameObject != null)
+                Destroy(instance.gameObject);
+
+            linkInstances.Remove(linkId);
         }
 
-        /// <summary>
-        /// 检查链路是否活跃
-        /// </summary>
-        private bool CheckLinkActive(Core.Satellite satellite, Core.GroundStation station)
-        {
-            if (earthRenderer == null) return false;
-
-            // 简化：根据卫星负载和距离判断
-            Vector3 satPos = satellite.GetWorldPosition(earthRenderer.GetEarthRadius());
-            Vector3 stationPos = station.GetWorldPosition(earthRenderer.GetEarthRadius());
-            float distance = Vector3.Distance(satPos, stationPos);
-
-            return distance <= maxLinkDistance && satellite.LoadRate < 0.8f;
-        }
-
-        /// <summary>
-        /// 检查链路是否潜在可用
-        /// </summary>
-        private bool CheckLinkPotential(Core.Satellite satellite, Core.GroundStation station)
-        {
-            if (earthRenderer == null) return false;
-
-            Vector3 satPos = satellite.GetWorldPosition(earthRenderer.GetEarthRadius());
-            Vector3 stationPos = station.GetWorldPosition(earthRenderer.GetEarthRadius());
-            float distance = Vector3.Distance(satPos, stationPos);
-
-            return distance <= maxLinkDistance * 1.2f && satellite.LoadRate < 0.9f;
-        }
-
-        /// <summary>
-        /// 创建默认粒子系统预制体
-        /// </summary>
         private ParticleSystem CreateDefaultParticlePrefab()
         {
             GameObject particleObj = new GameObject("LinkParticles");
             ParticleSystem particleSystem = particleObj.AddComponent<ParticleSystem>();
 
-            // 设置主模块
             var main = particleSystem.main;
             main.startSpeed = particleSpeed;
             main.startLifetime = 3f;
@@ -362,26 +345,14 @@ namespace SatelliteEdgeComputing.Visualization
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.maxParticles = 100;
 
-            // 设置发射模块
             var emission = particleSystem.emission;
             emission.rateOverTime = particleEmissionRate;
 
-            // 设置形状模块
             var shape = particleSystem.shape;
             shape.shapeType = ParticleSystemShapeType.Cone;
             shape.angle = 5f;
             shape.radius = 0.1f;
 
-            // 设置颜色随生命周期变化
-            var colorOverLifetime = particleSystem.colorOverLifetime;
-            Gradient gradient = new Gradient();
-            gradient.SetKeys(
-                new GradientColorKey[] { new GradientColorKey(Color.green, 0f), new GradientColorKey(Color.yellow, 1f) },
-                new GradientAlphaKey[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) }
-            );
-            colorOverLifetime.color = gradient;
-
-            // 设置渲染器
             var renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
             renderer.material = new Material(Shader.Find("Particles/Standard Unlit"));
 
@@ -389,62 +360,38 @@ namespace SatelliteEdgeComputing.Visualization
             return particleSystem;
         }
 
-        /// <summary>
-        /// 显示/隐藏所有链路
-        /// </summary>
         public void SetLinksVisible(bool visible)
         {
             showLinks = visible;
-            foreach (var instance in linkInstances.Values)
-            {
-                if (instance.lineRenderer != null)
-                {
-                    instance.lineRenderer.enabled = visible;
-                }
-            }
+            ApplyVisibilityOnly();
         }
 
-        /// <summary>
-        /// 启用/禁用粒子效果
-        /// </summary>
         public void SetParticlesEnabled(bool enabled)
         {
             useParticles = enabled;
-            foreach (var instance in linkInstances.Values)
-            {
-                if (instance.particleSystem != null)
-                {
-                    instance.particleSystem.gameObject.SetActive(enabled && instance.isActive);
-                }
-            }
+            ApplyVisibilityOnly();
         }
 
-        /// <summary>
-        /// 设置最大通信距离
-        /// </summary>
         public void SetMaxLinkDistance(float distance)
         {
             maxLinkDistance = Mathf.Max(1000f, distance);
+            lastUpdateTime = -999f;
         }
 
-        /// <summary>
-        /// 设置链路宽度
-        /// </summary>
         public void SetLinkWidth(float width)
         {
             linkWidth = Mathf.Max(0.1f, width);
+            ApplyVisibilityOnly();
         }
 
-        /// <summary>
-        /// 清除所有链路
-        /// </summary>
         public void ClearAll()
         {
             foreach (var linkId in new List<string>(linkInstances.Keys))
-            {
                 DestroyLinkInstance(linkId);
-            }
+
             linkInstances.Clear();
+            activeLinkCount = 0;
+            visibleLinkCount = 0;
         }
 
         void OnDestroy()

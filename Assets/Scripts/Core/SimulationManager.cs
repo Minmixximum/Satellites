@@ -453,18 +453,19 @@ namespace SatelliteEdgeComputing.Core
                     (error) => Debug.LogWarning($"获取时间信息失败: {error}")
                 ));
 
-                // 从后端获取最新数据
+                bool satellitesFinished = false;
+                bool tasksFinished = false;
+
                 StartCoroutine(Network.ApiClient.Instance.GetSatellites(
                     (satelliteList) => {
                         satellites = satelliteList;
-                        Debug.Log($"[SimulationManager] GetSatellites回调: 获取到 {satelliteList.Count} 颗卫星");
-                        OnDataUpdated?.Invoke();
-                        Debug.Log($"[SimulationManager] OnDataUpdated事件已触发");
+                        satellitesFinished = true;
                     },
                     (error) =>
                     {
                         useBackend = false;
                         PrepareLocalFallbackState();
+                        satellitesFinished = true;
                         Debug.LogWarning($"更新卫星数据失败: {error}");
                     }
                 ));
@@ -472,19 +473,29 @@ namespace SatelliteEdgeComputing.Core
                 StartCoroutine(Network.ApiClient.Instance.GetTasks(
                     (taskList) => {
                         tasks = taskList;
-                        Debug.Log($"[SimulationManager] GetTasks回调: 获取到 {taskList.Count} 个任务");
-                        // 更新统计信息
                         UpdateStatistics(taskList);
-                        OnDataUpdated?.Invoke();
-                        Debug.Log($"[SimulationManager] OnDataUpdated事件已触发");
+                        tasksFinished = true;
                     },
                     (error) =>
                     {
                         useBackend = false;
                         PrepareLocalFallbackState();
+                        tasksFinished = true;
                         Debug.LogWarning($"更新任务数据失败: {error}");
                     }
                 ));
+
+                float waitStartTime = Time.realtimeSinceStartup;
+                yield return new WaitUntil(() =>
+                    (satellitesFinished && tasksFinished) ||
+                    Time.realtimeSinceStartup - waitStartTime > Mathf.Max(2f, updateInterval * 4f));
+
+                if (!useBackend || !Network.ApiClient.Instance.IsConnected)
+                {
+                    UpdateStatistics(tasks);
+                }
+
+                OnDataUpdated?.Invoke();
             }
         }
 

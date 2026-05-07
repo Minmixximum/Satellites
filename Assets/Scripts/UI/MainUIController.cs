@@ -35,6 +35,9 @@ namespace SatelliteEdgeComputing.UI
         [SerializeField] private Button reconnectButton;
         [SerializeField] private Button initializeDemoButton;
         [SerializeField] private Button clearTasksButton;
+        [SerializeField] private Dropdown satelliteCountDropdown;
+        [SerializeField] private Dropdown groundStationCountDropdown;
+        [SerializeField] private Dropdown taskCountDropdown;
 
         [Header("统计信息")]
         [SerializeField] private Text satellitesCountText;
@@ -72,6 +75,10 @@ namespace SatelliteEdgeComputing.UI
         private float currentFPS = 60f;
         private bool isInitialized = false;  // 防止重复初始化
         private bool isStartingSimulation = false;
+        private bool satelliteCountDropdownCaptionBound = false;
+        private bool groundStationCountDropdownCaptionBound = false;
+        private bool taskCountDropdownCaptionBound = false;
+        private int lastTaskListSignature = int.MinValue;
 
         #region 初始化
         /// <summary>
@@ -134,7 +141,8 @@ namespace SatelliteEdgeComputing.UI
                     "EDD (最早截止时间优先)",
                     "Max-Visibility (最大可见性)"
                 });
-                algorithmDropdown.value = 0;
+                algorithmDropdown.SetValueWithoutNotify(0);
+                ConfigureDropdownCaption(algorithmDropdown);
             }
 
             // 初始化时间滑块
@@ -154,6 +162,8 @@ namespace SatelliteEdgeComputing.UI
         /// </summary>
         private void SetupEventListeners()
         {
+            ConfigureCountDropdowns();
+
             if (startButton != null)
                 startButton.onClick.AddListener(OnStartButtonClick);
 
@@ -334,7 +344,10 @@ namespace SatelliteEdgeComputing.UI
             // 计算活跃链路（简化）
             if (activeLinksText != null)
             {
-                activeLinksText.text = "活跃链路: 计算中...";
+                if (linkVisualizer != null)
+                    activeLinksText.text = $"活跃链路: {linkVisualizer.ActiveLinkCount}/{linkVisualizer.VisibleLinkCount}";
+                else
+                    activeLinksText.text = "活跃链路: 0";
             }
         }
 
@@ -408,6 +421,8 @@ namespace SatelliteEdgeComputing.UI
         /// </summary>
         private void UpdateTaskList()
         {
+            lastTaskListSignature = ComputeTaskListSignature();
+
             // 确保taskListContent存在
             EnsureTaskScrollView();
 
@@ -491,6 +506,42 @@ namespace SatelliteEdgeComputing.UI
             Debug.Log($"[MainUIController] UpdateTaskList: 已创建 {count} 个任务项UI");
         }
 
+        private void UpdateTaskListIfChanged()
+        {
+            int signature = ComputeTaskListSignature();
+            if (signature == lastTaskListSignature)
+                return;
+
+            UpdateTaskList();
+        }
+
+        private int ComputeTaskListSignature()
+        {
+            if (simulationManager == null || simulationManager.Tasks == null)
+                return 0;
+
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + simulationManager.Tasks.Count;
+                foreach (var task in simulationManager.Tasks)
+                {
+                    if (task == null)
+                    {
+                        hash = hash * 31;
+                        continue;
+                    }
+
+                    hash = hash * 31 + task.id;
+                    hash = hash * 31 + (task.status != null ? task.status.GetHashCode() : 0);
+                    hash = hash * 31 + task.assignedSatelliteId;
+                    hash = hash * 31 + task.priority;
+                    hash = hash * 31 + Mathf.RoundToInt(task.progress * 100f);
+                }
+                return hash;
+            }
+        }
+
         /// <summary>
         /// 格式化时间显示
         /// </summary>
@@ -529,7 +580,10 @@ namespace SatelliteEdgeComputing.UI
                 bool initializeFinished = false;
                 bool initializeSucceeded = false;
 
-                StartCoroutine(Network.ApiClient.Instance.InitializeDemo(
+                StartCoroutine(Network.ApiClient.Instance.InitializeScenario(
+                    GetSelectedCount(satelliteCountDropdown, 5),
+                    GetSelectedCount(groundStationCountDropdown, 3),
+                    GetSelectedCount(taskCountDropdown, 8),
                     (success) =>
                     {
                         initializeSucceeded = success;
@@ -553,6 +607,8 @@ namespace SatelliteEdgeComputing.UI
                 if (initializeSucceeded)
                 {
                     yield return StartCoroutine(RefreshTasks());
+                    yield return StartCoroutine(RefreshSatellites());
+                    yield return StartCoroutine(RefreshGroundStations());
                     UpdateTaskList();
                     UpdateUIElements();
                 }
@@ -646,24 +702,33 @@ namespace SatelliteEdgeComputing.UI
         {
             if (simulationManager == null) return;
 
-            // 调用API初始化演示数据
-            StartCoroutine(Network.ApiClient.Instance.InitializeDemo(
+            int satelliteCount = GetSelectedCount(satelliteCountDropdown, 5);
+            int groundStationCount = GetSelectedCount(groundStationCountDropdown, 3);
+            int taskCount = GetSelectedCount(taskCountDropdown, 8);
+
+            // 调用API初始化场景数据
+            StartCoroutine(Network.ApiClient.Instance.InitializeScenario(
+                satelliteCount,
+                groundStationCount,
+                taskCount,
                 (success) => {
                     if (success)
                     {
-                        Debug.Log("演示数据初始化成功");
+                        Debug.Log("场景初始化成功");
                         // 刷新任务列表
                         StartCoroutine(RefreshTasks());
+                        StartCoroutine(RefreshSatellites());
+                        StartCoroutine(RefreshGroundStations());
                         // 更新UI
                         UpdateUIElements();
                     }
                     else
                     {
-                        Debug.LogError("演示数据初始化失败");
+                        Debug.LogError("场景初始化失败");
                     }
                 },
                 (error) => {
-                    Debug.LogError($"初始化演示数据时出错: {error}");
+                    Debug.LogError($"初始化场景时出错: {error}");
                 }
             ));
         }
@@ -705,6 +770,48 @@ namespace SatelliteEdgeComputing.UI
             }
         }
 
+        private IEnumerator RefreshSatellites()
+        {
+            if (simulationManager == null)
+                yield break;
+
+            yield return StartCoroutine(Network.ApiClient.Instance.GetSatellites(
+                (satelliteList) =>
+                {
+                    simulationManager.Satellites.Clear();
+                    simulationManager.Satellites.AddRange(satelliteList);
+                },
+                null
+            ));
+        }
+
+        private IEnumerator RefreshGroundStations()
+        {
+            if (simulationManager == null)
+                yield break;
+
+            yield return StartCoroutine(Network.ApiClient.Instance.GetGroundStations(
+                (stationList) =>
+                {
+                    simulationManager.GroundStations.Clear();
+                    simulationManager.GroundStations.AddRange(stationList);
+                },
+                null
+            ));
+        }
+
+        private int GetSelectedCount(Dropdown dropdown, int defaultValue)
+        {
+            if (dropdown == null || dropdown.options == null || dropdown.options.Count == 0)
+                return defaultValue;
+
+            int index = Mathf.Clamp(dropdown.value, 0, dropdown.options.Count - 1);
+            if (int.TryParse(dropdown.options[index].text, out int value))
+                return value;
+
+            return defaultValue;
+        }
+
         private void OnCloseInfoButtonClick()
         {
             if (infoPanel != null)
@@ -735,6 +842,7 @@ namespace SatelliteEdgeComputing.UI
 
         private void OnSimulationReset()
         {
+            lastTaskListSignature = int.MinValue;
             UpdateUIElements();
             UpdateTaskList();
         }
@@ -742,19 +850,15 @@ namespace SatelliteEdgeComputing.UI
         private void OnDataUpdated()
         {
             // 数据更新时不使用频率限制，因为后端已经控制了更新频率
-            Debug.Log($"[MainUIController] OnDataUpdated被调用");
-
             int satCount = (simulationManager != null && simulationManager.Satellites != null) ? simulationManager.Satellites.Count : 0;
             int taskCount = (simulationManager != null && simulationManager.Tasks != null) ? simulationManager.Tasks.Count : 0;
-            Debug.Log($"[MainUIController] OnDataUpdated: 卫星数{satCount}, 任务数{taskCount}");
 
             UpdateStatistics();
-            UpdateTaskList();
+            UpdateTaskListIfChanged();
 
             // 更新卫星和地面站可视化
             if (satelliteVisualizer != null && simulationManager != null)
             {
-                Debug.Log($"[MainUIController] 调用 satelliteVisualizer.UpdateSatellites");
                 satelliteVisualizer.UpdateSatellites(simulationManager.Satellites);
             }
             else
@@ -763,12 +867,17 @@ namespace SatelliteEdgeComputing.UI
             }
             if (groundStationVisualizer != null && simulationManager != null)
             {
-                Debug.Log($"[MainUIController] 调用 groundStationVisualizer.UpdateGroundStations");
                 groundStationVisualizer.UpdateGroundStations(simulationManager.GroundStations);
             }
             else
             {
                 Debug.LogWarning($"[MainUIController] groundStationVisualizer为null, 无法更新地面站可视化");
+            }
+
+            if (linkVisualizer != null && simulationManager != null)
+            {
+                linkVisualizer.UpdateLinks(simulationManager.Satellites, simulationManager.GroundStations);
+                UpdateStatistics();
             }
         }
 
@@ -911,8 +1020,12 @@ namespace SatelliteEdgeComputing.UI
             if (controlPanel == null)
             {
                 // 左上角：x负方向(左)，y正方向(上偏中间)
-                controlPanel = CreatePanel(canvasTransform, "ControlPanel", new Vector2(-400, 80), new Vector2(200, 400));
+                controlPanel = CreatePanel(canvasTransform, "ControlPanel", new Vector2(-400, -10), new Vector2(200, 580));
                 Debug.Log("[MainUIController] Created ControlPanel");
+            }
+            else
+            {
+                SetPanelRect(controlPanel, new Vector2(-400, -10), new Vector2(200, 580));
             }
 
             if (statisticsPanel == null)
@@ -932,8 +1045,12 @@ namespace SatelliteEdgeComputing.UI
             if (connectionPanel == null)
             {
                 // 右下角：x正方向(右)，y负方向(下偏上一点，避免和统计面板太近)
-                connectionPanel = CreatePanel(canvasTransform, "ConnectionPanel", new Vector2(-400, -175), new Vector2(200, 100));
+                connectionPanel = CreatePanel(canvasTransform, "ConnectionPanel", new Vector2(400, -230), new Vector2(200, 90));
                 Debug.Log("[MainUIController] Created ConnectionPanel");
+            }
+            else
+            {
+                SetPanelRect(connectionPanel, new Vector2(400, -230), new Vector2(200, 90));
             }
 
             if (infoPanel == null)
@@ -978,11 +1095,7 @@ namespace SatelliteEdgeComputing.UI
                     dropdownComp = dropdownTransform.gameObject.AddComponent<Dropdown>();
                 }
 
-                // 可选：设置默认选项
-                dropdownComp.options.Clear();
-                dropdownComp.options.Add(new Dropdown.OptionData("算法 A"));
-                dropdownComp.options.Add(new Dropdown.OptionData("算法 B"));
-                dropdownComp.options.Add(new Dropdown.OptionData("算法 C"));
+                ConfigureDropdownCaption(dropdownComp);
 
                 Debug.Log("[MainUIController] algorithmDropdown added to canvas.");
             }
@@ -1028,6 +1141,49 @@ namespace SatelliteEdgeComputing.UI
             image.color = new Color(0.1f, 0.1f, 0.1f, 0.8f);
 
             return panel;
+        }
+
+        private void SetPanelRect(GameObject panel, Vector2 anchoredPosition, Vector2 size)
+        {
+            if (panel == null) return;
+
+            RectTransform rectTransform = panel.GetComponent<RectTransform>();
+            if (rectTransform == null)
+                rectTransform = panel.AddComponent<RectTransform>();
+
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+        }
+
+        private void PlaceUIElement(Component component, Transform parent, Vector2 anchoredPosition, Vector2 size)
+        {
+            if (component == null || parent == null) return;
+
+            Transform transform = component.transform;
+            if (transform.parent != parent)
+                transform.SetParent(parent, false);
+
+            RectTransform rectTransform = transform.GetComponent<RectTransform>();
+            if (rectTransform == null)
+                rectTransform = transform.gameObject.AddComponent<RectTransform>();
+
+            rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            rectTransform.anchoredPosition = anchoredPosition;
+            rectTransform.sizeDelta = size;
+        }
+
+        private void SetButtonLabel(Button button, string label)
+        {
+            if (button == null) return;
+
+            Text text = button.GetComponentInChildren<Text>();
+            if (text != null)
+                text.text = label;
         }
 
         /// <summary>
@@ -1147,15 +1303,220 @@ namespace SatelliteEdgeComputing.UI
             rectTransform.sizeDelta = size;
 
             Image image = dropdownGO.AddComponent<Image>();
-            image.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            image.color = Color.white;
 
             Dropdown dropdown = dropdownGO.AddComponent<Dropdown>();
+            dropdown.targetGraphic = image;
 
             // 创建标签文本
             Text labelText = CreateText(dropdownGO.transform, "Label", "选择...", Vector2.zero, new Vector2(size.x - 20, size.y), 14);
+            RectTransform labelRect = labelText.GetComponent<RectTransform>();
+            labelRect.anchorMin = Vector2.zero;
+            labelRect.anchorMax = Vector2.one;
+            labelRect.offsetMin = new Vector2(10f, 0f);
+            labelRect.offsetMax = new Vector2(-25f, 0f);
             labelText.alignment = TextAnchor.MiddleLeft;
             dropdown.captionText = labelText;
 
+            CreateDropdownTemplate(dropdown, size);
+            ConfigureDropdownCaption(dropdown);
+
+            return dropdown;
+        }
+
+        private void CreateDropdownTemplate(Dropdown dropdown, Vector2 dropdownSize)
+        {
+            GameObject templateGO = new GameObject("Template");
+            templateGO.transform.SetParent(dropdown.transform, false);
+            templateGO.SetActive(false);
+
+            RectTransform templateRect = templateGO.AddComponent<RectTransform>();
+            templateRect.anchorMin = new Vector2(0f, 0f);
+            templateRect.anchorMax = new Vector2(1f, 0f);
+            templateRect.pivot = new Vector2(0.5f, 1f);
+            templateRect.anchoredPosition = Vector2.zero;
+            templateRect.sizeDelta = new Vector2(0f, 120f);
+
+            Image templateImage = templateGO.AddComponent<Image>();
+            templateImage.color = Color.white;
+            ScrollRect scrollRect = templateGO.AddComponent<ScrollRect>();
+            scrollRect.horizontal = false;
+            scrollRect.movementType = ScrollRect.MovementType.Clamped;
+
+            GameObject viewportGO = new GameObject("Viewport");
+            viewportGO.transform.SetParent(templateGO.transform, false);
+            RectTransform viewportRect = viewportGO.AddComponent<RectTransform>();
+            viewportRect.anchorMin = Vector2.zero;
+            viewportRect.anchorMax = Vector2.one;
+            viewportRect.offsetMin = Vector2.zero;
+            viewportRect.offsetMax = Vector2.zero;
+            Image viewportImage = viewportGO.AddComponent<Image>();
+            viewportImage.color = Color.white;
+            Mask viewportMask = viewportGO.AddComponent<Mask>();
+            viewportMask.showMaskGraphic = false;
+
+            GameObject contentGO = new GameObject("Content");
+            contentGO.transform.SetParent(viewportGO.transform, false);
+            RectTransform contentRect = contentGO.AddComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0f, 1f);
+            contentRect.anchorMax = new Vector2(1f, 1f);
+            contentRect.pivot = new Vector2(0.5f, 1f);
+            contentRect.anchoredPosition = Vector2.zero;
+            contentRect.sizeDelta = new Vector2(0f, 28f);
+
+            VerticalLayoutGroup layout = contentGO.AddComponent<VerticalLayoutGroup>();
+            layout.childForceExpandWidth = true;
+            layout.childForceExpandHeight = false;
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
+            layout.spacing = 0f;
+
+            ContentSizeFitter fitter = contentGO.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            GameObject itemGO = new GameObject("Item");
+            itemGO.transform.SetParent(contentGO.transform, false);
+            RectTransform itemRect = itemGO.AddComponent<RectTransform>();
+            itemRect.anchorMin = new Vector2(0f, 0.5f);
+            itemRect.anchorMax = new Vector2(1f, 0.5f);
+            itemRect.sizeDelta = new Vector2(0f, dropdownSize.y);
+
+            Toggle itemToggle = itemGO.AddComponent<Toggle>();
+            itemToggle.targetGraphic = itemGO.AddComponent<Image>();
+            itemToggle.targetGraphic.color = new Color(0.92f, 0.92f, 0.92f, 1f);
+
+            Text itemLabel = CreateText(itemGO.transform, "Item Label", "Option", Vector2.zero, new Vector2(dropdownSize.x - 16f, dropdownSize.y), 14);
+            RectTransform itemLabelRect = itemLabel.GetComponent<RectTransform>();
+            itemLabelRect.anchorMin = Vector2.zero;
+            itemLabelRect.anchorMax = Vector2.one;
+            itemLabelRect.offsetMin = new Vector2(10f, 0f);
+            itemLabelRect.offsetMax = new Vector2(-6f, 0f);
+            itemLabel.color = new Color(0.1f, 0.1f, 0.1f, 1f);
+            itemLabel.alignment = TextAnchor.MiddleLeft;
+
+            scrollRect.viewport = viewportRect;
+            scrollRect.content = contentRect;
+            dropdown.template = templateRect;
+            dropdown.itemText = itemLabel;
+        }
+
+        private void ConfigureDropdownCaption(Dropdown dropdown)
+        {
+            if (dropdown == null) return;
+
+            bool captionIsTemplateItem = dropdown.captionText != null &&
+                (dropdown.captionText == dropdown.itemText ||
+                 (dropdown.template != null && dropdown.captionText.transform.IsChildOf(dropdown.template)));
+
+            if (dropdown.captionText == null || captionIsTemplateItem)
+            {
+                Text labelText = dropdown.transform.Find("Label")?.GetComponent<Text>();
+
+                if (labelText == null)
+                {
+                    GameObject labelGO = new GameObject("Label");
+                    labelGO.transform.SetParent(dropdown.transform, false);
+                    labelText = labelGO.AddComponent<Text>();
+                    labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                }
+
+                dropdown.captionText = labelText;
+            }
+
+            Text captionText = dropdown.captionText;
+            captionText.gameObject.SetActive(true);
+            captionText.enabled = true;
+            captionText.color = new Color(0.1f, 0.1f, 0.1f, 1f);
+            captionText.alignment = TextAnchor.MiddleLeft;
+            captionText.raycastTarget = false;
+
+            RectTransform captionRect = captionText.GetComponent<RectTransform>();
+            if (captionRect == null)
+                captionRect = captionText.gameObject.AddComponent<RectTransform>();
+            captionRect.anchorMin = Vector2.zero;
+            captionRect.anchorMax = Vector2.one;
+            captionRect.pivot = new Vector2(0.5f, 0.5f);
+            captionRect.offsetMin = new Vector2(10f, 0f);
+            captionRect.offsetMax = new Vector2(-25f, 0f);
+            captionText.transform.SetAsLastSibling();
+
+            Image background = dropdown.GetComponent<Image>();
+            if (background != null)
+                background.color = Color.white;
+
+            if (dropdown.options != null && dropdown.options.Count > 0)
+            {
+                dropdown.value = Mathf.Clamp(dropdown.value, 0, dropdown.options.Count - 1);
+                dropdown.RefreshShownValue();
+            }
+        }
+
+        private void ConfigureCountDropdowns()
+        {
+            ConfigureNumericDropdown(satelliteCountDropdown, "卫星数", 1, 20, 5, ref satelliteCountDropdownCaptionBound);
+            ConfigureNumericDropdown(groundStationCountDropdown, "地面站数", 1, 10, 3, ref groundStationCountDropdownCaptionBound);
+            ConfigureNumericDropdown(taskCountDropdown, "任务数", 1, 20, 8, ref taskCountDropdownCaptionBound);
+        }
+
+        private void ConfigureNumericDropdown(Dropdown dropdown, string label, int minValue, int maxValue, int defaultValue, ref bool listenerBound)
+        {
+            if (dropdown == null) return;
+
+            ConfigureDropdownCaption(dropdown);
+
+            var options = new System.Collections.Generic.List<Dropdown.OptionData>();
+            for (int value = minValue; value <= maxValue; value++)
+            {
+                options.Add(new Dropdown.OptionData(value.ToString()));
+            }
+
+            bool needsOptions = dropdown.options == null || dropdown.options.Count != options.Count;
+            if (!needsOptions)
+            {
+                for (int i = 0; i < options.Count; i++)
+                {
+                    if (dropdown.options[i].text != options[i].text)
+                    {
+                        needsOptions = true;
+                        break;
+                    }
+                }
+            }
+
+            if (needsOptions)
+            {
+                dropdown.ClearOptions();
+                dropdown.AddOptions(options);
+                dropdown.SetValueWithoutNotify(Mathf.Clamp(defaultValue - minValue, 0, options.Count - 1));
+            }
+            else
+            {
+                dropdown.SetValueWithoutNotify(Mathf.Clamp(dropdown.value, 0, options.Count - 1));
+            }
+
+            UpdateNumericDropdownCaption(dropdown, label, minValue);
+
+            if (!listenerBound)
+            {
+                dropdown.onValueChanged.AddListener((index) =>
+                {
+                    UpdateNumericDropdownCaption(dropdown, label, minValue);
+                });
+                listenerBound = true;
+            }
+        }
+
+        private void UpdateNumericDropdownCaption(Dropdown dropdown, string label, int minValue)
+        {
+            if (dropdown == null || dropdown.captionText == null) return;
+
+            int selectedValue = minValue + Mathf.Clamp(dropdown.value, 0, Mathf.Max(0, dropdown.options.Count - 1));
+            dropdown.captionText.text = $"{label}: {selectedValue}";
+        }
+
+        private Dropdown CreateNumericDropdown(Transform parent, string name, string label, Vector2 anchoredPosition, Vector2 size, int minValue, int maxValue, int defaultValue)
+        {
+            Dropdown dropdown = CreateDropdown(parent, name, anchoredPosition, size);
             return dropdown;
         }
 
@@ -1214,53 +1575,88 @@ namespace SatelliteEdgeComputing.UI
         {
             if (controlPanel == null) return;
 
-            // 面板尺寸 200x300，坐标从中心(0,0)开始，y范围大约 -150 到 +150
+            // 面板尺寸 200x580，坐标从中心(0,0)开始，y范围大约 -290 到 +290
             // 标题
-            CreateText(controlPanel.transform, "Title", "控制面板", new Vector2(0, 130), new Vector2(180, 25), 16);
+            CreateText(controlPanel.transform, "Title", "控制面板", new Vector2(0, 250), new Vector2(180, 25), 16);
 
             // 状态文本
             if (statusText == null)
-                statusText = CreateText(controlPanel.transform, "StatusText", "状态: 已暂停", new Vector2(0, 105), new Vector2(180, 20), 12);
+                statusText = CreateText(controlPanel.transform, "StatusText", "状态: 已暂停", new Vector2(0, 225), new Vector2(180, 20), 12);
 
             // 时间文本
             if (timeText == null)
-                timeText = CreateText(controlPanel.transform, "TimeText", "仿真时间: 00:00", new Vector2(0, 85), new Vector2(180, 20), 12);
+                timeText = CreateText(controlPanel.transform, "TimeText", "仿真时间: 00:00", new Vector2(0, 205), new Vector2(180, 20), 12);
 
             // FPS文本
             if (fpsText == null)
-                fpsText = CreateText(controlPanel.transform, "FPSText", "FPS: 60", new Vector2(0, 65), new Vector2(180, 20), 12);
+                fpsText = CreateText(controlPanel.transform, "FPSText", "FPS: 60", new Vector2(0, 185), new Vector2(180, 20), 12);
 
             // 开始按钮和暂停按钮并排
             if (startButton == null)
-                startButton = CreateButton(controlPanel.transform, "StartButton", "开始", new Vector2(-48, 30), new Vector2(75, 28));
+                startButton = CreateButton(controlPanel.transform, "StartButton", "开始", new Vector2(-48, 150), new Vector2(75, 28));
+            PlaceUIElement(startButton, controlPanel.transform, new Vector2(-48, 150), new Vector2(75, 28));
 
             if (pauseButton == null)
-                pauseButton = CreateButton(controlPanel.transform, "PauseButton", "暂停", new Vector2(48, 30), new Vector2(75, 28));
+                pauseButton = CreateButton(controlPanel.transform, "PauseButton", "暂停", new Vector2(48, 150), new Vector2(75, 28));
+            PlaceUIElement(pauseButton, controlPanel.transform, new Vector2(48, 150), new Vector2(75, 28));
 
             // 重置按钮
             if (resetButton == null)
-                resetButton = CreateButton(controlPanel.transform, "ResetButton", "重置", new Vector2(0, -5), new Vector2(160, 28));
+                resetButton = CreateButton(controlPanel.transform, "ResetButton", "重置仿真", new Vector2(0, 115), new Vector2(160, 28));
+            PlaceUIElement(resetButton, controlPanel.transform, new Vector2(0, 115), new Vector2(160, 28));
+            SetButtonLabel(resetButton, "重置仿真");
 
             // 算法下拉框
             if (algorithmDropdown == null)
-                algorithmDropdown = CreateDropdown(controlPanel.transform, "AlgorithmDropdown", new Vector2(0, -40), new Vector2(160, 28));
+                algorithmDropdown = CreateDropdown(controlPanel.transform, "AlgorithmDropdown", new Vector2(0, 80), new Vector2(160, 28));
+            PlaceUIElement(algorithmDropdown, controlPanel.transform, new Vector2(0, 80), new Vector2(160, 28));
 
             // 时间缩放滑块和值文本
             if (timeScaleSlider == null)
-                timeScaleSlider = CreateSlider(controlPanel.transform, "TimeScaleSlider", new Vector2(-25, -75), new Vector2(100, 20));
+                timeScaleSlider = CreateSlider(controlPanel.transform, "TimeScaleSlider", new Vector2(-25, 45), new Vector2(100, 20));
+            PlaceUIElement(timeScaleSlider, controlPanel.transform, new Vector2(-25, 45), new Vector2(100, 20));
 
             if (timeScaleValueText == null)
-                timeScaleValueText = CreateText(controlPanel.transform, "TimeScaleValue", "x1.0", new Vector2(60, -75), new Vector2(45, 20), 12);
+                timeScaleValueText = CreateText(controlPanel.transform, "TimeScaleValue", "x1.0", new Vector2(60, 45), new Vector2(45, 20), 12);
+            PlaceUIElement(timeScaleValueText, controlPanel.transform, new Vector2(60, 45), new Vector2(45, 20));
 
             // 显示开关 - 三个开关垂直排列
             if (showOrbitsToggle == null)
-                showOrbitsToggle = CreateToggle(controlPanel.transform, "ShowOrbitsToggle", "显示轨道", new Vector2(0, -105));
+                showOrbitsToggle = CreateToggle(controlPanel.transform, "ShowOrbitsToggle", "显示轨道", new Vector2(0, 15));
+            PlaceUIElement(showOrbitsToggle, controlPanel.transform, new Vector2(0, 15), new Vector2(160, 20));
 
             if (showLinksToggle == null)
-                showLinksToggle = CreateToggle(controlPanel.transform, "ShowLinksToggle", "显示链路", new Vector2(0, -125));
+                showLinksToggle = CreateToggle(controlPanel.transform, "ShowLinksToggle", "显示链路", new Vector2(0, -10));
+            PlaceUIElement(showLinksToggle, controlPanel.transform, new Vector2(0, -10), new Vector2(160, 20));
 
             if (showLabelsToggle == null)
-                showLabelsToggle = CreateToggle(controlPanel.transform, "ShowLabelsToggle", "显示标签", new Vector2(0, -145));
+                showLabelsToggle = CreateToggle(controlPanel.transform, "ShowLabelsToggle", "显示标签", new Vector2(0, -35));
+            PlaceUIElement(showLabelsToggle, controlPanel.transform, new Vector2(0, -35), new Vector2(160, 20));
+
+            if (satelliteCountDropdown == null)
+                satelliteCountDropdown = CreateNumericDropdown(controlPanel.transform, "SatelliteCountDropdown", "卫星数", new Vector2(0, -75), new Vector2(160, 28), 1, 20, 5);
+            PlaceUIElement(satelliteCountDropdown, controlPanel.transform, new Vector2(0, -75), new Vector2(160, 28));
+            ConfigureNumericDropdown(satelliteCountDropdown, "卫星数", 1, 20, 5, ref satelliteCountDropdownCaptionBound);
+
+            if (groundStationCountDropdown == null)
+                groundStationCountDropdown = CreateNumericDropdown(controlPanel.transform, "GroundStationCountDropdown", "地面站数", new Vector2(0, -110), new Vector2(160, 28), 1, 10, 3);
+            PlaceUIElement(groundStationCountDropdown, controlPanel.transform, new Vector2(0, -110), new Vector2(160, 28));
+            ConfigureNumericDropdown(groundStationCountDropdown, "地面站数", 1, 10, 3, ref groundStationCountDropdownCaptionBound);
+
+            if (taskCountDropdown == null)
+                taskCountDropdown = CreateNumericDropdown(controlPanel.transform, "TaskCountDropdown", "任务数", new Vector2(0, -145), new Vector2(160, 28), 1, 20, 8);
+            PlaceUIElement(taskCountDropdown, controlPanel.transform, new Vector2(0, -145), new Vector2(160, 28));
+            ConfigureNumericDropdown(taskCountDropdown, "任务数", 1, 20, 8, ref taskCountDropdownCaptionBound);
+
+            if (initializeDemoButton == null)
+                initializeDemoButton = CreateButton(controlPanel.transform, "InitScenarioButton", "初始化场景", new Vector2(0, -185), new Vector2(160, 28));
+            PlaceUIElement(initializeDemoButton, controlPanel.transform, new Vector2(0, -185), new Vector2(160, 28));
+            SetButtonLabel(initializeDemoButton, "初始化场景");
+
+            if (clearTasksButton == null)
+                clearTasksButton = CreateButton(controlPanel.transform, "ClearTasksButton", "清除任务", new Vector2(0, -220), new Vector2(160, 28));
+            PlaceUIElement(clearTasksButton, controlPanel.transform, new Vector2(0, -220), new Vector2(160, 28));
+            SetButtonLabel(clearTasksButton, "清除任务");
         }
 
         /// <summary>
@@ -1313,11 +1709,6 @@ namespace SatelliteEdgeComputing.UI
             // 面板尺寸 200x200
             // 标题
             CreateText(taskPanel.transform, "Title", "任务列表", new Vector2(0,135), new Vector2(180, 25), 16);
-
-            // 清除任务按钮放在底部
-            if (clearTasksButton == null)
-                clearTasksButton = CreateButton(taskPanel.transform, "ClearTasksButton", "清除任务", new Vector2(0, -90), new Vector2(160, 28));
-            clearTasksButton.transform.SetAsLastSibling();
 
             EnsureTaskScrollView();
 
@@ -1698,12 +2089,11 @@ namespace SatelliteEdgeComputing.UI
             if (connectionStatusText == null)
                 connectionStatusText = CreateText(connectionPanel.transform, "Status", "API: 未连接", new Vector2(0, 12), new Vector2(180, 20), 12);
 
-            // 两个按钮并排放置
+            // 连接面板只保留连接相关操作，场景初始化在控制面板中。
             if (reconnectButton == null)
-                reconnectButton = CreateButton(connectionPanel.transform, "ReconnectButton", "重新连接", new Vector2(-48, -22), new Vector2(75, 26));
-
-            if (initializeDemoButton == null)
-                initializeDemoButton = CreateButton(connectionPanel.transform, "InitDemoButton", "初始化", new Vector2(48, -22), new Vector2(75, 26));
+                reconnectButton = CreateButton(connectionPanel.transform, "ReconnectButton", "重新连接", new Vector2(0, -22), new Vector2(120, 26));
+            PlaceUIElement(reconnectButton, connectionPanel.transform, new Vector2(0, -22), new Vector2(120, 26));
+            SetButtonLabel(reconnectButton, "重新连接");
         }
 
         /// <summary>
