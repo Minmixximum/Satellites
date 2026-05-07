@@ -1,0 +1,5 @@
+scenario,satellite_count,ground_station_count,task_count,seed,workload,algorithm,completion_rate,completed_tasks,total_tasks,avg_response_time_s,avg_turnaround_time_s,avg_earliness_s,resource_utilization_ratio,high_priority_completion_rate
+small,5,1,10,101,loose,FCFS,1.0000,10,10,14.70,314.70,17981.10,0.8483,1.0000
+small,5,1,10,101,loose,SJF,1.0000,10,10,3643.80,3943.80,14352.00,0.8483,1.0000
+small,5,1,10,101,loose,EDD,1.0000,10,10,2139.40,2439.40,15856.40,0.8483,1.0000
+small,5,1,10,101,loose,Max-Visibility,1.0000,10,10,4497.40,4797.40,13498.40,0.8483,1.0000
