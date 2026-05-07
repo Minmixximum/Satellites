@@ -1,6 +1,4 @@
-﻿"""
-Task-related API routes.
-"""
+"""Task-related API routes."""
 
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -12,11 +10,35 @@ task_bp = Blueprint("task", __name__, url_prefix="/api")
 
 try:
     from core.time_utils import ensure_utc, parse_iso_datetime, utc_now
+    from database.runtime_sync import (
+        db_task_to_api,
+        load_engine_tasks_from_db,
+        record_scheduling_history,
+        sync_engine_tasks_to_db,
+        task_runtime_updates,
+    )
+    from models.task_v2 import Task
+    from models.satellite_v2 import Satellite
+    from models.ground_station_v2 import GroundStation
 except ImportError:  # pragma: no cover
     from ..core.time_utils import ensure_utc, parse_iso_datetime, utc_now
+    from ..database.runtime_sync import (
+        db_task_to_api,
+        load_engine_tasks_from_db,
+        record_scheduling_history,
+        sync_engine_tasks_to_db,
+        task_runtime_updates,
+    )
+    from ..models.task_v2 import Task
+    from ..models.satellite_v2 import Satellite
+    from ..models.ground_station_v2 import GroundStation
 
-# In-memory task store
+
 _tasks: Dict[str, dict] = {}
+
+
+def _get_db():
+    return getattr(current_app, "db_manager", None)
 
 
 def _get_engine():
@@ -39,77 +61,73 @@ def _resolve_reference_time() -> datetime:
     return utc_now()
 
 
-def _get_live_tasks() -> List[dict]:
+def _sync_runtime_before_read():
+    db_manager = _get_db()
     engine = _get_engine()
-    if not engine or not getattr(engine, "tasks", None):
+    if db_manager and engine:
+        sync_engine_tasks_to_db(db_manager, engine)
+
+
+def _get_live_tasks() -> List[dict]:
+    db_manager = _get_db()
+    if not db_manager:
         return list(_tasks.values())
 
-    current_time = _resolve_reference_time()
-    live_tasks: List[dict] = []
-    for task_id, task in engine.tasks.items():
-        task_dict = task.to_dict(current_time=current_time)
-        _tasks[task_id] = task_dict
-        live_tasks.append(task_dict)
-
-    return live_tasks
+    _sync_runtime_before_read()
+    return [db_task_to_api(task) for task in db_manager.get_all_tasks()]
 
 
 @task_bp.route("/tasks/list", methods=["GET"])
 def get_tasks():
     """Get task list."""
     status = request.args.get("status")
+    db_manager = _get_db()
+
+    if db_manager:
+        _sync_runtime_before_read()
+        if status:
+            tasks = db_manager.get_tasks_by_status(status)
+        else:
+            tasks = db_manager.get_all_tasks()
+        data = [db_task_to_api(task) for task in tasks]
+        return jsonify({"success": True, "data": data, "count": len(data)})
+
     tasks = _get_live_tasks()
-
     if status:
-        tasks = [t for t in tasks if t.get("status") == status]
-
+        tasks = [task for task in tasks if task.get("status") == status]
     return jsonify({"success": True, "data": tasks, "count": len(tasks)})
 
 
 @task_bp.route("/tasks/<task_id>", methods=["GET"])
 def get_task(task_id: str):
     """Get a single task."""
-    live_tasks = {task["id"]: task for task in _get_live_tasks()}
-
-    if task_id in live_tasks:
-        return jsonify({"success": True, "data": live_tasks[task_id]})
+    db_manager = _get_db()
+    if db_manager:
+        _sync_runtime_before_read()
+        task = db_manager.get_task(task_id)
+        if not task:
+            return jsonify({"success": False, "error": f"Task {task_id} not found"}), 404
+        return jsonify({"success": True, "data": db_task_to_api(task)})
 
     if task_id not in _tasks:
         return jsonify({"success": False, "error": f"Task {task_id} not found"}), 404
-
     return jsonify({"success": True, "data": _tasks[task_id]})
 
 
 @task_bp.route("/tasks/create", methods=["POST"])
 def create_task():
-    """
-    Create a task.
-    Request body:
-        {
-            "size": 500,
-            "priority": 3,
-            "deadline": "2024-01-01T02:00:00",
-            "arrival_time": "2024-01-01T00:00:00",
-            "task_type": "computing",
-            "input_data_size": 100,
-            "output_data_size": 50
-        }
-    """
+    """Create a task."""
     data = request.get_json()
 
     if not data or "size" not in data:
         return jsonify({"success": False, "error": "Missing required field: size"}), 400
 
     task_id = data.get("id") or f"task_{uuid.uuid4().hex[:8]}"
-
-    arrival_time = data.get("arrival_time")
-    deadline = data.get("deadline")
-
     now = _resolve_reference_time()
-    dt_arrival = parse_iso_datetime(arrival_time, default=now)
-    dt_deadline = parse_iso_datetime(deadline, default=now + timedelta(hours=1))
+    dt_arrival = parse_iso_datetime(data.get("arrival_time"), default=now)
+    dt_deadline = parse_iso_datetime(data.get("deadline"), default=now + timedelta(hours=1))
 
-    _tasks[task_id] = {
+    task_data = {
         "id": task_id,
         "size": data["size"],
         "priority": data.get("priority", 3),
@@ -119,18 +137,33 @@ def create_task():
         "assigned_satellite": None,
         "actual_start": None,
         "actual_end": None,
+        "source_lat": data.get("source_lat"),
+        "source_lon": data.get("source_lon"),
         "task_type": data.get("task_type", "computing"),
         "input_data_size": data.get("input_data_size", 0),
         "output_data_size": data.get("output_data_size", 0),
         "created_at": now.isoformat(),
     }
 
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.save_task(task_data)
+        saved = db_task_to_api(db_manager.get_task(task_id))
+        engine = _get_engine()
+        if engine:
+            engine.add_task(Task.from_dict(saved))
+        return jsonify(
+            {
+                "success": True,
+                "data": saved,
+                "message": f"Task {task_id} created successfully",
+            }
+        )
+
+    _tasks[task_id] = task_data
     engine = _get_engine()
     if engine:
-        from ..models.task_v2 import Task
-
-        task = Task.from_dict(_tasks[task_id])
-        engine.add_task(task)
+        engine.add_task(Task.from_dict(task_data))
 
     return jsonify(
         {
@@ -144,13 +177,23 @@ def create_task():
 @task_bp.route("/tasks/<task_id>", methods=["DELETE"])
 def delete_task(task_id: str):
     """Delete a task."""
+    db_manager = _get_db()
+    if db_manager:
+        if not db_manager.delete_task(task_id):
+            return jsonify({"success": False, "error": f"Task {task_id} not found"}), 404
+
+        engine = _get_engine()
+        if engine:
+            engine.remove_task(task_id)
+
+        return jsonify({"success": True, "message": f"Task {task_id} deleted successfully"})
+
     if task_id not in _tasks:
         return jsonify({"success": False, "error": f"Task {task_id} not found"}), 404
 
     engine = _get_engine()
     if engine:
         engine.remove_task(task_id)
-
     del _tasks[task_id]
 
     return jsonify({"success": True, "message": f"Task {task_id} deleted successfully"})
@@ -159,6 +202,9 @@ def delete_task(task_id: str):
 @task_bp.route("/tasks/clear", methods=["POST"])
 def clear_tasks():
     """Clear all tasks."""
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.clear_all_tasks()
     _tasks.clear()
 
     engine = _get_engine()
@@ -191,46 +237,35 @@ def get_algorithms():
 
 @task_bp.route("/scheduler/run", methods=["POST"])
 def run_scheduler():
-    """
-    Run scheduler.
-    Request body:
-        {
-            "algorithm": "fcfs",
-            "time_start": "2024-01-01T00:00:00",
-            "time_end": "2024-01-01T01:00:00"
-        }
-    """
+    """Run scheduler."""
     data = request.get_json() or {}
     algorithm = data.get("algorithm", "fcfs")
 
     scheduler = _get_scheduler()
     engine = _get_engine()
+    db_manager = _get_db()
 
     if not scheduler or not engine:
         return jsonify({"success": False, "error": "Scheduler or simulation engine not available"}), 500
 
-    pending_tasks = [t for t in _tasks.values() if t.get("status") == "pending"]
+    if db_manager:
+        pending_tasks = [db_task_to_api(task) for task in db_manager.get_pending_tasks()]
+    else:
+        pending_tasks = [task for task in _tasks.values() if task.get("status") == "pending"]
 
     if not pending_tasks:
         return jsonify({"success": False, "error": "No pending tasks to schedule"}), 400
 
-    from ..models.task_v2 import Task
-    from ..models.satellite_v2 import Satellite
-    from ..models.ground_station_v2 import GroundStation
     from .satellite_routes import get_stored_ground_stations, get_stored_satellites
 
-    task_objects = [Task.from_dict(t) for t in pending_tasks]
-
+    task_objects = [Task.from_dict(task) for task in pending_tasks]
     sat_data = get_stored_satellites()
     gs_data = get_stored_ground_stations()
-
-    satellites = [Satellite.from_dict(s) for s in sat_data.values()]
+    satellites = [Satellite.from_dict(sat) for sat in sat_data.values()]
     ground_stations = [GroundStation.from_dict(gs) for gs in gs_data.values()]
 
-    time_start = data.get("time_start")
-    time_end = data.get("time_end")
-    dt_start = parse_iso_datetime(time_start, default=_resolve_reference_time())
-    dt_end = parse_iso_datetime(time_end, default=dt_start + timedelta(hours=1))
+    dt_start = parse_iso_datetime(data.get("time_start"), default=_resolve_reference_time())
+    dt_end = parse_iso_datetime(data.get("time_end"), default=dt_start + timedelta(hours=1))
 
     result = scheduler.run_scheduling(
         algorithm=algorithm,
@@ -244,9 +279,20 @@ def run_scheduler():
     if not result:
         return jsonify({"success": False, "error": f"Failed to run scheduler with algorithm: {algorithm}"}), 400
 
-    for task in result.tasks:
-        if task.id in _tasks:
-            _tasks[task.id].update(task.to_dict())
+    if db_manager:
+        for task in result.tasks:
+            db_manager.update_task(task.id, task_runtime_updates(task, dt_start))
+            engine.tasks[task.id] = task
+        record_scheduling_history(
+            db_manager,
+            result,
+            getattr(engine, "current_session_id", None),
+            algorithm,
+        )
+    else:
+        for task in result.tasks:
+            if task.id in _tasks:
+                _tasks[task.id].update(task.to_dict())
 
     return jsonify({"success": True, "data": result.to_dict()})
 
@@ -269,38 +315,29 @@ def get_scheduler_result(result_id: str):
 
 @task_bp.route("/scheduler/compare", methods=["POST"])
 def compare_algorithms():
-    """
-    Compare all scheduling algorithms.
-    Request body:
-        {
-            "time_start": "2024-01-01T00:00:00",
-            "time_end": "2024-01-01T01:00:00"
-        }
-    """
+    """Compare all scheduling algorithms."""
     data = request.get_json() or {}
-
     scheduler = _get_scheduler()
+    db_manager = _get_db()
 
     if not scheduler:
         return jsonify({"success": False, "error": "Scheduler not available"}), 500
 
-    from ..models.task_v2 import Task
-    from ..models.satellite_v2 import Satellite
-    from ..models.ground_station_v2 import GroundStation
     from .satellite_routes import get_stored_ground_stations, get_stored_satellites
 
-    task_objects = [Task.from_dict(t) for t in _tasks.values()]
+    if db_manager:
+        task_rows = [db_task_to_api(task) for task in db_manager.get_all_tasks()]
+    else:
+        task_rows = list(_tasks.values())
 
+    task_objects = [Task.from_dict(task) for task in task_rows]
     sat_data = get_stored_satellites()
     gs_data = get_stored_ground_stations()
-
-    satellites = [Satellite.from_dict(s) for s in sat_data.values()]
+    satellites = [Satellite.from_dict(sat) for sat in sat_data.values()]
     ground_stations = [GroundStation.from_dict(gs) for gs in gs_data.values()]
 
-    time_start = data.get("time_start")
-    time_end = data.get("time_end")
-    dt_start = parse_iso_datetime(time_start, default=_resolve_reference_time())
-    dt_end = parse_iso_datetime(time_end, default=dt_start + timedelta(hours=1))
+    dt_start = parse_iso_datetime(data.get("time_start"), default=_resolve_reference_time())
+    dt_end = parse_iso_datetime(data.get("time_end"), default=dt_start + timedelta(hours=1))
 
     comparison = scheduler.compare_algorithms(
         tasks=task_objects,
@@ -314,11 +351,33 @@ def compare_algorithms():
 
 
 def init_tasks(tasks: List[dict]):
-    """Initialize task store."""
+    """Compatibility helper: persist task seed data instead of owning an in-memory store."""
     _tasks.clear()
-    _tasks.update({t["id"]: t for t in tasks if isinstance(t, dict) and "id" in t})
+    _tasks.update({task["id"]: task for task in tasks if isinstance(task, dict) and "id" in task})
+
+    try:
+        db_manager = _get_db()
+    except RuntimeError:
+        db_manager = None
+
+    if db_manager:
+        db_manager.save_tasks_batch(tasks)
+        engine = _get_engine()
+        if engine:
+            load_engine_tasks_from_db(db_manager, engine)
 
 
 def get_stored_tasks():
-    """Get current task store."""
+    """Compatibility helper returning the current database-backed task map."""
+    try:
+        db_manager = _get_db()
+    except RuntimeError:
+        db_manager = None
+
+    if db_manager:
+        return {
+            task["id"]: db_task_to_api(task)
+            for task in db_manager.get_all_tasks()
+            if isinstance(task, dict) and task.get("id")
+        }
     return _tasks

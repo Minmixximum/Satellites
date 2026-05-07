@@ -20,8 +20,15 @@ try:
     from core.visibility import VisibilityAnalyzer
     from api import initialize_bp, satellite_bp, simulation_bp, task_bp
     from api.satellite_routes import init_ground_stations, init_satellites
-    from api.task_routes import init_tasks
+    from data.bootstrap import activate_task_selection, seed_reference_data
     from data.tle_fetcher import fetch_and_save_tle
+    from database import DatabaseManager
+    from database.runtime_sync import (
+        load_engine_tasks_from_db,
+        record_scheduling_history,
+        sync_engine_stats_to_session,
+        sync_engine_tasks_to_db,
+    )
 except ImportError:  # pragma: no cover
     from .config import Config, config_map
     from .models import GroundStation, Satellite, Task
@@ -30,8 +37,15 @@ except ImportError:  # pragma: no cover
     from .core.visibility import VisibilityAnalyzer
     from .api import initialize_bp, satellite_bp, simulation_bp, task_bp
     from .api.satellite_routes import init_ground_stations, init_satellites
-    from .api.task_routes import init_tasks
+    from .data.bootstrap import activate_task_selection, seed_reference_data
     from .data.tle_fetcher import fetch_and_save_tle
+    from .database import DatabaseManager
+    from .database.runtime_sync import (
+        load_engine_tasks_from_db,
+        record_scheduling_history,
+        sync_engine_stats_to_session,
+        sync_engine_tasks_to_db,
+    )
 
 try:
     from core.time_utils import utc_now
@@ -62,10 +76,23 @@ def create_app(config_name: str = "default") -> Flask:
     app.orbit_calculator = OrbitCalculator()
     app.visibility_analyzer = VisibilityAnalyzer(app.orbit_calculator)
     app.task_scheduler = TaskScheduler(app.visibility_analyzer)
+    app.db_manager = DatabaseManager(app.config["DATABASE_URL"])
     app.simulation_engine = SimulationEngine(
         app.task_scheduler,
         app.orbit_calculator,
         app.visibility_analyzer,
+    )
+    app.simulation_engine.persistence_sync = lambda engine: (
+        sync_engine_tasks_to_db(app.db_manager, engine),
+        sync_engine_stats_to_session(app.db_manager, engine, getattr(engine, "current_session_id", None)),
+    )
+    app.simulation_engine.scheduling_result_sink = (
+        lambda result, algorithm, session_id: record_scheduling_history(
+            app.db_manager,
+            result,
+            session_id,
+            algorithm,
+        )
     )
 
     app.register_blueprint(satellite_bp)
@@ -79,7 +106,7 @@ def create_app(config_name: str = "default") -> Flask:
 
 def _initialize_data(app: Flask) -> None:
     """Initialize in-memory stores and simulation engine state."""
-    tle_dir = os.path.join(os.path.dirname(__file__), "data", "tle")
+    tle_dir = app.config.get("TLE_DIR", os.path.join(os.path.dirname(__file__), "data", "tle"))
     tle_file_path = os.path.join(tle_dir, "tle.txt")
 
     try:
@@ -94,12 +121,18 @@ def _initialize_data(app: Flask) -> None:
     else:
         satellites_data = _generate_test_satellites(config.DEFAULT_SATELLITE_COUNT)
 
-    ground_stations_data = _generate_test_ground_stations(config.DEFAULT_GROUND_STATION_COUNT)
-    tasks_data = generate_tasks(count=config.DEFAULT_GENERATE_TASK_NUM)
+    seed_result = seed_reference_data(app.db_manager)
+    print(
+        "reference data seeded: "
+        f"ground_stations_inserted={seed_result['ground_stations_inserted']} "
+        f"tasks_inserted={seed_result['tasks_inserted']}"
+    )
+
+    ground_stations_data = app.db_manager.get_ground_stations(limit=config.DEFAULT_GROUND_STATION_COUNT)
+    tasks_data = activate_task_selection(app.db_manager, config.DEFAULT_GENERATE_TASK_NUM)
 
     init_satellites(satellites_data)
     init_ground_stations(ground_stations_data)
-    init_tasks(tasks_data)
 
     for sat_data in satellites_data:
         try:
@@ -113,12 +146,8 @@ def _initialize_data(app: Flask) -> None:
 
     satellites = [Satellite.from_dict(s) for s in satellites_data]
     ground_stations = [GroundStation.from_dict(gs) for gs in ground_stations_data]
-    tasks = [Task.from_dict(ts) for ts in tasks_data]
-
     app.simulation_engine.initialize(satellites, ground_stations)
-    app.simulation_engine.clear_tasks()
-    for task in tasks:
-        app.simulation_engine.add_task(task)
+    load_engine_tasks_from_db(app.db_manager, app.simulation_engine)
 
 
 def _parse_tle_file(filepath: str, count: int = config.DEFAULT_SATELLITE_COUNT) -> List[dict]:
@@ -135,11 +164,13 @@ def _parse_tle_file(filepath: str, count: int = config.DEFAULT_SATELLITE_COUNT) 
 
     i = 0
     line_len = len(lines)
+    step_triplets = max(1, line_len // max(1, count * 4))
+    step = max(3, 3 * step_triplets)
     while i + 2 < line_len and len(satellites) < count:
         name_line = lines[i]
         tle_line1 = lines[i + 1]
         tle_line2 = lines[i + 2]
-        i += 3*(line_len // (count*4))
+        i += step
 
         lat = 0.0
         lon = 0.0
@@ -154,15 +185,24 @@ def _parse_tle_file(filepath: str, count: int = config.DEFAULT_SATELLITE_COUNT) 
         except Exception:
             pass
 
-        norad_id = tle_line1[2:7].strip() or f"{len(satellites) + 1:03d}"
-        sat_id = f"sat_{norad_id}"
+        norad_str = tle_line1[2:7].strip() or f"{len(satellites) + 1:03d}"
+        norad_id = int(norad_str) if norad_str.isdigit() else None
+        sat_id = f"sat_{norad_str}"
+        tle_epoch = OrbitCalculator._parse_tle_epoch(tle_line1)
+        inclination = OrbitCalculator._parse_inclination(tle_line2)
+        mean_motion = OrbitCalculator._parse_mean_motion(tle_line2)
 
         satellites.append(
             {
                 "id": sat_id,
                 "name": name_line,
+                "norad_id": norad_id,
                 "tle_line1": tle_line1,
                 "tle_line2": tle_line2,
+                "tle_epoch": tle_epoch.isoformat() if tle_epoch else None,
+                "inclination": inclination,
+                "altitude": round(alt, 3),
+                "mean_motion": mean_motion,
                 "capacity": 800 + (len(satellites) % 5) * 100,
                 "storage": 500 + (len(satellites) % 3) * 250,
                 "max_power": 3000,
@@ -193,8 +233,19 @@ def _generate_test_satellites(count: int = 5) -> List[dict]:
             {
                 "id": sat_id,
                 "name": f"Satellite-{i + 1}",
+                "norad_id": i + 1,
                 "tle_line1": f"1 0000{i + 1:02d}U 24001A   26100.00000000  .00000000  00000-0  00000-0 0  0010",
                 "tle_line2": f"2 0000{i + 1:02d}  53.0000 {i * 45:8.4f} 0001000 000.0000 000.0000 15.00000000    10",
+                "tle_epoch": OrbitCalculator._parse_tle_epoch(
+                    f"1 0000{i + 1:02d}U 24001A   26100.00000000  .00000000  00000-0  00000-0 0  0010"
+                ).isoformat(),
+                "inclination": OrbitCalculator._parse_inclination(
+                    f"2 0000{i + 1:02d}  53.0000 {i * 45:8.4f} 0001000 000.0000 000.0000 15.00000000    10"
+                ),
+                "altitude": float(altitude),
+                "mean_motion": OrbitCalculator._parse_mean_motion(
+                    f"2 0000{i + 1:02d}  53.0000 {i * 45:8.4f} 0001000 000.0000 000.0000 15.00000000    10"
+                ),
                 "capacity": 800 + (i % 5) * 100,
                 "storage": 500 + (i % 3) * 250,
                 "max_power": 3000,
@@ -243,6 +294,65 @@ def _generate_test_ground_stations(count: int = 3) -> List[dict]:
         )
 
     return stations
+
+
+def _normalize_satellite_snapshot(orbit_calculator: OrbitCalculator, satellite_data: dict) -> dict:
+    """Build the persisted satellite snapshot shape."""
+    tle_line1 = satellite_data.get("tle_line1", "")
+    tle_line2 = satellite_data.get("tle_line2", "")
+    position = satellite_data.get("position") or {}
+
+    tle_epoch = satellite_data.get("tle_epoch")
+    if not tle_epoch and tle_line1:
+        parsed_epoch = orbit_calculator._parse_tle_epoch(tle_line1)
+        tle_epoch = parsed_epoch.isoformat() if parsed_epoch else None
+
+    inclination = satellite_data.get("inclination")
+    if inclination is None and tle_line2:
+        inclination = orbit_calculator._parse_inclination(tle_line2)
+
+    mean_motion = satellite_data.get("mean_motion")
+    if mean_motion is None and tle_line2:
+        mean_motion = orbit_calculator._parse_mean_motion(tle_line2)
+
+    altitude = satellite_data.get("altitude")
+    if altitude is None:
+        altitude = position.get("alt")
+
+    return {
+        "id": satellite_data["id"],
+        "name": satellite_data.get("name", satellite_data["id"]),
+        "norad_id": satellite_data.get("norad_id"),
+        "tle_line1": tle_line1,
+        "tle_line2": tle_line2,
+        "tle_epoch": tle_epoch,
+        "inclination": inclination,
+        "altitude": altitude,
+        "mean_motion": mean_motion,
+        "capacity": satellite_data.get("capacity", 30000.0),
+        "storage": satellite_data.get("storage", 500 * 1024),
+        "max_power": satellite_data.get("max_power", 3000.0),
+        "current_power": satellite_data.get("current_power", 3000.0),
+        "current_load": satellite_data.get("current_load", 0.0),
+        "is_visible": satellite_data.get("is_visible", False),
+        "completed_tasks": satellite_data.get("completed_tasks", 0),
+        "failed_tasks": satellite_data.get("failed_tasks", 0),
+    }
+
+
+def _normalize_ground_station_snapshot(ground_station_data: dict) -> dict:
+    """Build the persisted ground station snapshot shape."""
+    return {
+        "id": ground_station_data["id"],
+        "name": ground_station_data["name"],
+        "latitude": ground_station_data["latitude"],
+        "longitude": ground_station_data["longitude"],
+        "altitude": ground_station_data.get("altitude", 0.0),
+        "min_elevation": ground_station_data.get("min_elevation", 10.0),
+        "max_range": ground_station_data.get("max_range", 3000.0),
+        "communication_speed": ground_station_data.get("communication_speed", 100.0),
+        "is_active": ground_station_data.get("is_active", True),
+    }
 
 
 def _generate_default_tasks(count: Optional[int] = None) -> List[dict]:

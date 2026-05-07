@@ -8,16 +8,20 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from flask import Blueprint, current_app, jsonify
+from flask import Blueprint, current_app, jsonify, request
 
 try:
     from models.ground_station_v2 import GroundStation
     from models.satellite_v2 import Satellite
     from models.task_v2 import Task
+    from data.bootstrap import MAX_GROUND_STATIONS, MAX_TASKS, activate_task_selection, seed_reference_data
+    from data.tle_fetcher import fetch_and_save_tle
 except ImportError:  # pragma: no cover
     from ..models.ground_station_v2 import GroundStation
     from ..models.satellite_v2 import Satellite
     from ..models.task_v2 import Task
+    from ..data.bootstrap import MAX_GROUND_STATIONS, MAX_TASKS, activate_task_selection, seed_reference_data
+    from ..data.tle_fetcher import fetch_and_save_tle
 
 initialize_bp = Blueprint("initialize", __name__, url_prefix="/api/initialize")
 
@@ -33,13 +37,16 @@ def _load_tle_from_file(filepath: str) -> List[dict]:
     with open(filepath, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
 
-    for i in range(0, len(lines), 3):
+    for index, i in enumerate(range(0, len(lines), 3), start=1):
         if i + 2 >= len(lines):
             break
+        tle_line1 = lines[i + 1]
+        norad_str = tle_line1[2:7].strip() or f"{index:03d}"
         satellites.append(
             {
+                "id": f"sat_{norad_str}",
                 "name": lines[i],
-                "tle_line1": lines[i + 1],
+                "tle_line1": tle_line1,
                 "tle_line2": lines[i + 2],
                 "capacity": 1000,
                 "storage": 1000,
@@ -224,6 +231,39 @@ def _load_scenario_data(scenario_path: str):
         return None, None, None, f"Error loading scenario: {exc}"
 
 
+def _resolve_tle_file() -> Optional[str]:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tle_dir = os.path.join(backend_dir, "data", "tle")
+    os.makedirs(tle_dir, exist_ok=True)
+
+    try:
+        fetch_and_save_tle(output_dir=tle_dir)
+    except Exception as exc:
+        print(f"warning: failed to refresh TLE data for scenario init: {exc}")
+
+    preferred = os.path.join(tle_dir, "tle.txt")
+    if os.path.exists(preferred):
+        return preferred
+
+    candidates = [
+        os.path.join(tle_dir, name)
+        for name in os.listdir(tle_dir)
+        if name.endswith(".txt")
+    ]
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+    return candidates[0]
+
+
+def _parse_positive_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @initialize_bp.route("/demo", methods=["POST"])
 def initialize_demo():
     """Initialize a demo task set (8 random tasks)."""
@@ -232,6 +272,9 @@ def initialize_demo():
         if not engine:
             return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
+        db_manager = getattr(current_app, "db_manager", None)
+        if db_manager:
+            db_manager.clear_all_tasks()
         engine.clear_tasks()
 
         tasks = engine.generate_random_tasks(
@@ -265,6 +308,9 @@ def initialize_test_tasks():
         if not engine:
             return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
+        db_manager = getattr(current_app, "db_manager", None)
+        if db_manager:
+            db_manager.clear_all_tasks()
         engine.clear_tasks()
 
         tasks = engine.generate_random_tasks(
@@ -296,6 +342,9 @@ def clear_tasks():
     try:
         from .task_routes import init_tasks
 
+        db_manager = getattr(current_app, "db_manager", None)
+        if db_manager:
+            db_manager.clear_all_tasks()
         init_tasks([])
 
         engine = current_app.simulation_engine
@@ -334,29 +383,51 @@ def get_initialization_status():
 
 @initialize_bp.route("/scenario", methods=["POST"])
 def initialize_scenario():
-    """Initialize from scenario.json (find existing or generate automatically)."""
+    """Initialize a selectable scenario from TLE + database-backed seed data."""
     try:
         engine = current_app.simulation_engine
         if not engine:
             return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
-        scenario_path, error = _generate_scenario_file()
-        if error:
-            return jsonify({"success": False, "error": f"Failed to generate scenario: {error}"}), 500
+        payload = request.get_json(silent=True) or {}
+        requested_satellite_count = _parse_positive_int(payload.get("satellite_count"), 5)
+        requested_ground_station_count = _parse_positive_int(payload.get("ground_station_count"), 3)
+        requested_task_count = _parse_positive_int(payload.get("task_count"), 8)
 
-        satellites, ground_stations, tasks, error = _load_scenario_data(scenario_path)
-        if error:
-            return jsonify({"success": False, "error": error}), 500
+        if requested_satellite_count < 1:
+            return jsonify({"success": False, "error": "satellite_count must be at least 1"}), 400
+        if requested_ground_station_count < 1:
+            return jsonify({"success": False, "error": "ground_station_count must be at least 1"}), 400
+        if requested_ground_station_count > MAX_GROUND_STATIONS:
+            return jsonify({"success": False, "error": f"ground_station_count cannot exceed {MAX_GROUND_STATIONS}"}), 400
+        if requested_task_count < 1:
+            return jsonify({"success": False, "error": "task_count must be at least 1"}), 400
+        if requested_task_count > MAX_TASKS:
+            return jsonify({"success": False, "error": f"task_count cannot exceed {MAX_TASKS}"}), 400
 
+        tle_file = _resolve_tle_file()
+        if not tle_file:
+            return jsonify({"success": False, "error": "No TLE file available"}), 500
+
+        satellites = _load_tle_from_file(tle_file)
         if not satellites:
-            return jsonify({"success": False, "error": "No satellites found in scenario"}), 400
+            return jsonify({"success": False, "error": "No satellites parsed from TLE file"}), 400
+
+        satellite_count = min(requested_satellite_count, len(satellites))
+        satellites = satellites[:satellite_count]
+
+        db_manager = getattr(current_app, "db_manager", None)
+        if not db_manager:
+            return jsonify({"success": False, "error": "Database manager not available"}), 500
+
+        seed_reference_data(db_manager)
+        ground_stations = db_manager.get_ground_stations(limit=requested_ground_station_count)
+        tasks = activate_task_selection(db_manager, requested_task_count)
 
         from .satellite_routes import init_ground_stations, init_satellites
-        from .task_routes import init_tasks
 
         init_satellites(satellites)
         init_ground_stations(ground_stations)
-        init_tasks(tasks)
 
         orbit_calc = getattr(current_app, "orbit_calculator", None)
         if orbit_calc:
@@ -390,7 +461,7 @@ def initialize_scenario():
                     "satellite_count": len(satellites),
                     "ground_station_count": len(ground_stations),
                     "task_count": len(tasks),
-                    "scenario_file": scenario_path,
+                    "tle_file": tle_file,
                 },
             }
         )

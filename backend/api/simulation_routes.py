@@ -2,16 +2,16 @@
 Simulation control API routes.
 """
 
-from datetime import datetime
-
 from flask import Blueprint, current_app, jsonify, request
 
 simulation_bp = Blueprint("simulation", __name__, url_prefix="/api")
 
 try:
     from core.time_utils import utc_now
+    from database.runtime_sync import load_engine_tasks_from_db, sync_engine_tasks_to_db, sync_engine_stats_to_session
 except ImportError:  # pragma: no cover
     from ..core.time_utils import utc_now
+    from ..database.runtime_sync import load_engine_tasks_from_db, sync_engine_tasks_to_db, sync_engine_stats_to_session
 
 
 def _get_engine():
@@ -20,6 +20,10 @@ def _get_engine():
 
 def _get_scheduler():
     return getattr(current_app, "task_scheduler", None)
+
+
+def _get_db():
+    return getattr(current_app, "db_manager", None)
 
 
 @simulation_bp.route("/simulation/start", methods=["POST"])
@@ -48,6 +52,7 @@ def start_simulation():
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
     algorithm = data.get("algorithm", "fcfs")
+    db_manager = _get_db()
 
     # Single source of truth: speed_factor.
     # Keep backward compatibility for legacy names.
@@ -65,8 +70,18 @@ def start_simulation():
     # Keep this field for compatibility but neutralize its effect.
     engine.time_speed = 1.0
     speed_result = engine.set_speed_factor(speed_factor)
+    if db_manager:
+        load_engine_tasks_from_db(db_manager, engine)
+        engine.current_session_id = db_manager.create_session(
+            algorithm=algorithm,
+            speed_factor=speed_result["speed_factor"],
+            max_tasks=len(getattr(engine, "tasks", {})),
+        )
     engine.start(algorithm)
     engine.run_scheduling()
+    if db_manager:
+        sync_engine_tasks_to_db(db_manager, engine)
+        sync_engine_stats_to_session(db_manager, engine, engine.current_session_id)
 
     return jsonify(
         {
@@ -122,6 +137,10 @@ def pause_simulation():
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
     engine.pause()
+    db_manager = _get_db()
+    if db_manager:
+        sync_engine_tasks_to_db(db_manager, engine)
+        sync_engine_stats_to_session(db_manager, engine, getattr(engine, "current_session_id", None))
 
     return jsonify(
         {
@@ -160,6 +179,15 @@ def reset_simulation():
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
     engine.stop()
+    db_manager = _get_db()
+    session_id = getattr(engine, "current_session_id", None)
+    if db_manager and session_id:
+        sync_engine_tasks_to_db(db_manager, engine)
+        sync_engine_stats_to_session(db_manager, engine, session_id)
+        db_manager.update_session(session_id, {"status": "reset"})
+    if db_manager:
+        db_manager.clear_all_tasks()
+    engine.current_session_id = None
 
     # Also clear task store.
     from .task_routes import init_tasks
@@ -204,6 +232,10 @@ def simulation_step():
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
 
     engine.step(delta)
+    db_manager = _get_db()
+    if db_manager:
+        sync_engine_tasks_to_db(db_manager, engine)
+        sync_engine_stats_to_session(db_manager, engine, getattr(engine, "current_session_id", None))
 
     return jsonify({"success": True, "data": engine.get_status()})
 
@@ -231,13 +263,9 @@ def generate_batch_tasks():
     priority_dist = data.get("priority_distribution", [0.1, 0.2, 0.4, 0.2, 0.1])
 
     tasks = engine.generate_random_tasks(count, tuple(size_range), priority_dist)
-
-    # Sync to task store.
-    from .task_routes import get_stored_tasks
-
-    stored = get_stored_tasks()
-    for task in tasks:
-        stored[task.id] = task.to_dict()
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.save_tasks_batch([task.to_dict() for task in tasks])
 
     return jsonify(
         {
@@ -283,6 +311,11 @@ def get_simulation_time():
 
     if not engine:
         return jsonify({"success": False, "error": "Simulation engine not available"}), 500
+
+    db_manager = _get_db()
+    if db_manager:
+        sync_engine_tasks_to_db(db_manager, engine)
+        sync_engine_stats_to_session(db_manager, engine, getattr(engine, "current_session_id", None))
 
     return jsonify({"success": True, "data": engine.get_time_info()})
 

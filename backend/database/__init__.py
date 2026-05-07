@@ -1,7 +1,15 @@
 """Database package for satellite scheduling system."""
 
 from .db_manager import DatabaseManager
-from .models import Base, SatelliteDB, GroundStationDB, TaskDB, SimulationSessionDB
+from .models import (
+    Base,
+    GroundStationDB,
+    SatelliteDB,
+    SchedulingHistoryDB,
+    SimulationSessionDB,
+    TaskDB,
+    VisibilityRecordDB,
+)
 
 __all__ = [
     'DatabaseManager',
@@ -10,4 +18,6 @@ __all__ = [
     'GroundStationDB',
     'TaskDB',
     'SimulationSessionDB',
+    'VisibilityRecordDB',
+    'SchedulingHistoryDB',
 ]

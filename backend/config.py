@@ -42,6 +42,9 @@ class Config:
     DATA_DIR = os.path.join(BASE_DIR, "data")
     TLE_DIR = os.path.join(DATA_DIR, "tle")
     SCENARIOS_DIR = os.path.join(DATA_DIR, "scenarios")
+    DATABASE_URL = os.environ.get("DATABASE_URL") or (
+        "sqlite:///" + os.path.join(DATA_DIR, "satellite.db").replace("\\", "/")
+    )
 
 
 class DevelopmentConfig(Config):
@@ -52,6 +55,7 @@ class DevelopmentConfig(Config):
 class TestingConfig(Config):
     DEBUG = False
     TESTING = True
+    DATABASE_URL = "sqlite:///:memory:"
 
 
 class ProductionConfig(Config):

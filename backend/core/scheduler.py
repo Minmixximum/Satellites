@@ -267,6 +267,9 @@ class SimulationEngine:
         self._simulation_thread = None
         self._stop_thread = False
         self._thread_interval = 0.2  # 秒
+        self.persistence_sync = None
+        self.scheduling_result_sink = None
+        self.current_session_id = None
 
     def initialize(self, satellites: List[Satellite],
                   ground_stations: List[GroundStation],
@@ -398,6 +401,7 @@ class SimulationEngine:
         self._update_task_status()
         self.run_scheduling()
         self._update_task_status()
+        self._sync_persistence()
 
     def _update_satellite_positions(self):
         """更新所有卫星位置"""
@@ -525,8 +529,14 @@ class SimulationEngine:
             for task in result.tasks:
                 if task.id in self.tasks:
                     self.tasks[task.id] = task
+            if self.scheduling_result_sink:
+                self.scheduling_result_sink(result, self.active_algorithm, self.current_session_id)
 
         return result
+
+    def _sync_persistence(self):
+        if self.persistence_sync:
+            self.persistence_sync(self)
 
     def get_status(self) -> Dict:
         """获取仿真状态"""

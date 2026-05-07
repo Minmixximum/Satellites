@@ -31,6 +31,10 @@ def _get_visibility_analyzer():
     return getattr(current_app, "visibility_analyzer", None)
 
 
+def _get_db():
+    return getattr(current_app, "db_manager", None)
+
+
 def _resolve_reference_time() -> datetime:
     engine = _get_engine()
     if engine and getattr(engine, "current_time", None):
@@ -215,6 +219,9 @@ def create_satellite():
         "last_update": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     }
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.save_satellite(_satellites[sat_id])
 
     return jsonify(
         {
@@ -236,6 +243,9 @@ def delete_satellite(sat_id: str):
         orbit_calc.remove_satellite(sat_id)
 
     del _satellites[sat_id]
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.delete_satellite(sat_id)
 
     return jsonify({"success": True, "message": f"Satellite {sat_id} deleted successfully"})
 
@@ -291,6 +301,9 @@ def create_ground_station():
         "is_active": True,
         "created_at": utc_now().isoformat(),
     }
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.save_ground_station(_ground_stations[gs_id])
 
     return jsonify(
         {
@@ -308,6 +321,9 @@ def delete_ground_station(gs_id: str):
         return jsonify({"success": False, "error": f"Ground station {gs_id} not found"}), 404
 
     del _ground_stations[gs_id]
+    db_manager = _get_db()
+    if db_manager:
+        db_manager.update_ground_station(gs_id, {"is_active": False})
 
     return jsonify({"success": True, "message": f"Ground station {gs_id} deleted successfully"})
 
